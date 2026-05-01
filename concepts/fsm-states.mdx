@@ -1,0 +1,95 @@
+---
+title: "Agent difficulty states (FSM)"
+description: "How ReasonBlocks classifies agent difficulty across FAST, NORMAL, SLOW, and SKIP states, and what each state means for model routing and E-trace injection."
+---
+
+ReasonBlocks tracks how hard your agent is working on each step using a finite state machine (FSM). After scoring a step, the FSM looks at the recent difficulty history and transitions between states that describe the agent's current trajectory — coasting through easy steps, working normally, struggling with a hard problem, or appearing completely stuck. The current state gates model routing and controls whether E-trace injections are retrieved at all.
+
+## States
+
+| State    | Meaning                                                                                          |
+|----------|--------------------------------------------------------------------------------------------------|
+| `INIT`   | Starting state before any step has been scored. Transitions to `NORMAL` on the first scored step. |
+| `FAST`   | The agent has produced consistently low-difficulty steps recently. E-traces are skipped entirely. |
+| `NORMAL` | Default operating state. Scoring, monitors, and E1/E2/E3 injections all run as normal.           |
+| `SLOW`   | The agent has produced consistently high-difficulty steps recently. A stronger model may be routed. |
+| `SKIP`   | The agent has been in high-difficulty territory for an extended window. Indicates a deeply stalled run. |
+| `END`    | Terminal state. Once reached, the FSM no longer transitions.                                      |
+
+## Transition rules
+
+The FSM uses three thresholds and a hysteresis margin to decide when to transition. All values are configurable.
+
+| Parameter           | Default | Purpose                                                               |
+|---------------------|---------|-----------------------------------------------------------------------|
+| `fast_threshold`    | `0.2`   | A step below this score is considered "easy".                         |
+| `slow_threshold`    | `0.6`   | A step above this score is considered "hard".                         |
+| `skip_threshold`    | `0.85`  | A step above this score is considered "very hard" for the SKIP gate. |
+| `hysteresis_margin` | `0.1`   | Buffer applied when leaving FAST or SLOW to prevent rapid oscillation. |
+
+**From `NORMAL`:**
+
+- Transitions to `FAST` if the last **6** steps all scored below `fast_threshold` (0.2).
+- Transitions to `SLOW` if the last **5** steps all scored above `slow_threshold` (0.6).
+- Otherwise stays `NORMAL`.
+
+**From `FAST`:**
+
+- Transitions back to `NORMAL` if the current score exceeds `fast_threshold + hysteresis_margin` (0.3).
+- Otherwise stays `FAST`.
+
+**From `SLOW` or `SKIP`:**
+
+- Transitions back to `NORMAL` if the current score drops below `slow_threshold - hysteresis_margin` (0.5).
+- Transitions to `SKIP` if the last **35** steps all scored above `skip_threshold` (0.85).
+- Otherwise stays `SLOW`.
+
+<Note>
+  The hysteresis margin prevents the FSM from rapidly flipping between states when scores hover near a threshold. A single easy step does not exit SLOW — the score must drop meaningfully below the boundary.
+</Note>
+
+## What each state does
+
+**`FAST`** skips the entire E-trace pipeline. No pattern-store lookups, no embeddings, no injections beyond what is already cached. This keeps overhead minimal when the agent is making consistent progress. Monitors still run in FAST state because loop detection is most useful precisely when the agent is moving quickly.
+
+**`NORMAL`** runs the full pipeline: monitors evaluate, E1 is queried if the monitor gate allows it, E2 retrieves pattern-level guidance, and E3 provides universal rules (on the first call).
+
+**`SLOW`** runs the full pipeline and, if you have configured `model_routing`, routes the request to a stronger model. Monitor injection cooldowns are shorter in SLOW state (every 2 steps instead of 3) so guidance arrives more frequently.
+
+**`SKIP`** behaves like `SLOW` but signals a deeply stalled run. It applies the same 2-step cooldown for monitor injections.
+
+## Configuring thresholds
+
+Pass custom thresholds when constructing `ReasonBlocks`. Only the values you specify are overridden; the rest use their defaults.
+
+```python
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    fsm_thresholds={
+        "fast_threshold": 0.15,
+        "slow_threshold": 0.65,
+        "skip_threshold": 0.90,
+        "hysteresis_margin": 0.08,
+    },
+)
+```
+
+## Configuring model routing
+
+Map FSM state names to model identifiers. ReasonBlocks transparently swaps the model on the affected steps.
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    model_routing={
+        "SLOW": "anthropic/claude-opus-4-5",
+        "FAST": "anthropic/claude-haiku-3-5",
+    },
+)
+```
+
+<Tip>
+  A common pattern is to route `SLOW` and `SKIP` to a stronger model and leave `NORMAL` and `FAST` on your default. This concentrates compute budget on the steps where it matters most.
+</Tip>

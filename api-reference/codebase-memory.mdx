@@ -1,0 +1,290 @@
+---
+title: "CodebaseMemory class reference"
+description: "API reference for CodebaseMemory — store, recall, invalidate, and manage per-codebase agent findings with semantic search and cache coverage helpers."
+---
+
+`CodebaseMemory` is a thin HTTP client around the ReasonBlocks findings store. It lets an agent persist observations about a codebase — bugs found, file summaries, architectural notes — and retrieve them on future runs via semantic search against a per-codebase vector collection.
+
+The client never raises on transport errors. Every method returns an empty list, `None`, `0`, or `False` when the backend is unreachable, so a missing or slow API endpoint never breaks your agent loop.
+
+<Tip>
+  Framework wrappers in `reasonblocks.integrations.langchain_tools` and `reasonblocks.integrations.claude_tools` expose these methods as LLM-callable tools. Use `CodebaseMemory` directly when you need programmatic control; use the integration wrappers when you want to hand the tool to an LLM.
+</Tip>
+
+## Constructor
+
+```python
+from reasonblocks import CodebaseMemory
+
+memory = CodebaseMemory(
+    codebase_id="myorg_myrepo",
+    api_key="rb_live_...",
+    base_url="https://rb-api.mycompany.com",
+)
+```
+
+<ParamField path="codebase_id" type="string" required>
+  Identifies which codebase's findings collection to read from and write to. Use a stable, unique string — typically the org and repo names joined with an underscore, such as `"pydantic_pydantic"` or `"myorg_myrepo"`. Raises `ValueError` if empty.
+</ParamField>
+
+<ParamField path="api_key" type="string" required>
+  Your ReasonBlocks API key, used as a Bearer token on every request.
+</ParamField>
+
+<ParamField path="base_url" type="string">
+  The API origin to connect to. Set this when pointing to a self-hosted deployment. When omitted, the SDK connects to the ReasonBlocks hosted API. The trailing slash is stripped automatically.
+</ParamField>
+
+<ParamField path="timeout" type="number" default="10.0">
+  HTTP request timeout in seconds. The underlying HTTP client keeps TCP connections warm across calls, so a modest timeout is safe for most deployments.
+</ParamField>
+
+---
+
+## `store()`
+
+Persists a single finding to the codebase's findings collection. The content is embedded server-side and indexed for semantic recall.
+
+```python
+finding_id = memory.store(
+    "BaseModel.validate raises ValidationError when extra=forbid",
+    file_path="pydantic/main.py",
+    finding_type="behavior",
+    metadata={"reviewer": "agent-1", "pr": 42},
+)
+```
+
+<ParamField path="content" type="string" required>
+  The finding text to store. Truncated server-side to 8,000 characters. Returns `None` immediately if the content is empty or whitespace-only.
+</ParamField>
+
+<ParamField path="file_path" type="string" default='""'>
+  The file this finding is about. Truncated to 512 characters. Stored alongside the embedding so you can filter or invalidate by path later.
+</ParamField>
+
+<ParamField path="finding_type" type="string" default='"note"'>
+  A label that categorizes the finding. Truncated to 64 characters. Common values include `"behavior"`, `"bug"`, `"summary"`, `"architecture"`, and `"note"`.
+</ParamField>
+
+<ParamField path="metadata" type="object">
+  Arbitrary key–value pairs stored with the finding. Useful for tagging findings with run IDs, reviewer names, PR numbers, or any other context you want to retrieve later.
+</ParamField>
+
+<ResponseField name="return" type="string | None">
+  The `finding_id` string assigned by the server, or `None` if the store call failed or the content was empty.
+</ResponseField>
+
+---
+
+## `recall()`
+
+Performs a semantic search over the codebase's stored findings and returns the most relevant results.
+
+```python
+results = memory.recall(
+    "validator error handling",
+    top_k=5,
+    score_threshold=0.3,
+)
+
+for r in results:
+    print(r["file_path"], r["score"])
+    print(r["content"])
+```
+
+<ParamField path="query" type="string" required>
+  The search query. Embedded server-side and compared against stored finding embeddings. Truncated to 2,000 characters. Returns an empty list immediately if the query is empty or whitespace-only.
+</ParamField>
+
+<ParamField path="top_k" type="integer" default="5">
+  Maximum number of results to return. Results are ordered by descending relevance score.
+</ParamField>
+
+<ParamField path="score_threshold" type="number" default="0.25">
+  Minimum cosine similarity score a finding must reach to be included in the results. Raise this to get only high-confidence matches; lower it to cast a wider net.
+</ParamField>
+
+<ResponseField name="return" type="list[dict]">
+  A list of finding dicts ordered by descending relevance score. Each dict contains:
+
+  <Expandable title="Result dict fields">
+    <ResponseField name="content" type="string">
+      The stored finding text.
+    </ResponseField>
+    <ResponseField name="file_path" type="string">
+      The file path the finding was stored under.
+    </ResponseField>
+    <ResponseField name="finding_type" type="string">
+      The finding type label (e.g., `"bug"`, `"behavior"`, `"note"`).
+    </ResponseField>
+    <ResponseField name="score" type="number">
+      Cosine similarity score between 0 and 1. Higher means more relevant.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## `list_all()`
+
+Returns every finding currently stored for this codebase, without any filtering or ranking.
+
+```python
+all_findings = memory.list_all()
+print(f"{len(all_findings)} findings in cache")
+```
+
+<ResponseField name="return" type="list[dict]">
+  A flat list of all finding dicts for this codebase. Each dict has the same shape as results from `recall()`. Returns an empty list on transport error.
+</ResponseField>
+
+---
+
+## `invalidate()`
+
+Deletes all findings whose `file_path` matches any path in the given list. Use this to keep the cache consistent when files change.
+
+```python
+deleted = memory.invalidate(["pydantic/main.py", "pydantic/validators.py"])
+print(f"Removed {deleted} stale findings")
+```
+
+<Tip>
+  Pair `invalidate()` with `ImportGraph.blast_radius()` to automatically widen invalidation to all files that import the changed files — not just the changed files themselves.
+</Tip>
+
+<ParamField path="file_paths" type="string[]" required>
+  A list of file paths to invalidate. Returns `0` immediately when the list is empty.
+</ParamField>
+
+<ResponseField name="return" type="integer">
+  The number of findings deleted. Returns `0` on transport error.
+</ResponseField>
+
+---
+
+## `clear()`
+
+Drops the entire findings collection for this codebase. This is irreversible.
+
+```python
+success = memory.clear()
+```
+
+<Warning>
+  `clear()` deletes all findings for the codebase permanently. There is no undo. Use `invalidate()` for targeted removal.
+</Warning>
+
+<ResponseField name="return" type="boolean">
+  `True` if the collection was cleared successfully, `False` on transport error or if the server did not confirm the operation.
+</ResponseField>
+
+---
+
+## `close()`
+
+Releases the underlying `httpx.Client` and its connection pool. Call this when you are done with the `CodebaseMemory` instance and want to free resources immediately.
+
+```python
+memory.close()
+```
+
+<Note>
+  You do not need to call `close()` if the process is about to exit. The HTTP client will be cleaned up automatically. `close()` is most useful in long-running servers where you want to explicitly reclaim connections.
+</Note>
+
+---
+
+## `store_many()`
+
+Convenience method that calls `store()` for each item in a batch. Use this instead of manually looping when you want to persist multiple findings at once.
+
+```python
+findings = [
+    {
+        "content": "auth.py validates JWT expiry before every request",
+        "file_path": "app/auth.py",
+        "finding_type": "behavior",
+    },
+    {
+        "content": "models.py uses __slots__ for all dataclasses",
+        "file_path": "app/models.py",
+        "finding_type": "architecture",
+    },
+]
+
+stored_count = memory.store_many(findings)
+print(f"Stored {stored_count} findings")
+```
+
+<ParamField path="findings" type="object[]" required>
+  A list of finding dicts. Each dict must have at least a `content` key. The optional keys are `file_path`, `finding_type`, and `metadata`, matching the parameters of `store()`. Dicts missing `content` or with an empty `content` are silently skipped.
+</ParamField>
+
+<ResponseField name="return" type="integer">
+  The count of findings successfully stored. Items that were skipped or failed do not count toward this total.
+</ResponseField>
+
+---
+
+## `coverage_for()`
+
+Returns the fraction of the given file paths that have at least one finding stored in memory. Useful for deciding whether the cache is rich enough to answer a query or whether the agent needs additional tooling to compensate.
+
+```python
+paths = ["app/auth.py", "app/models.py", "app/views.py"]
+ratio = memory.coverage_for(paths)
+
+if ratio < 0.5:
+    print("Cache coverage is low — consider running a full review first")
+```
+
+A soft path match is applied: a finding stored under `pydantic/main.py` counts as covering a query for `main.py`.
+
+<ParamField path="file_paths" type="string[]" required>
+  The list of file paths to check coverage for. Returns `1.0` immediately when the list is empty.
+</ParamField>
+
+<ResponseField name="return" type="number">
+  A float between 0.0 and 1.0 representing the fraction of paths covered. Returns `0.0` when there are no findings in memory at all.
+</ResponseField>
+
+---
+
+## `format_recall()`
+
+Runs `recall()` and formats the results as a human-readable string suitable for returning directly from an LLM tool. Avoids duplicating the formatting logic in every agent.
+
+```python
+digest = memory.format_recall(
+    "error handling in the auth module",
+    top_k=3,
+    score_threshold=0.3,
+    max_len=400,
+)
+# Returns a formatted string like:
+# Found 2 relevant prior findings:
+#
+# --- [behavior] app/auth.py  (relevance 0.81) ---
+# auth.py raises AuthError with code 401 when ...
+```
+
+<ParamField path="query" type="string" required>
+  The search query passed to `recall()`.
+</ParamField>
+
+<ParamField path="top_k" type="integer" default="5">
+  Maximum number of results to return, passed through to `recall()`.
+</ParamField>
+
+<ParamField path="score_threshold" type="number" default="0.25">
+  Minimum similarity score, passed through to `recall()`.
+</ParamField>
+
+<ParamField path="max_len" type="integer" default="300">
+  Maximum characters to include from each finding's content in the formatted output. Longer content is truncated.
+</ParamField>
+
+<ResponseField name="return" type="string">
+  A formatted multi-line string with a header and one section per result. Returns `"(no relevant findings in cache yet)"` when there are no matches.
+</ResponseField>

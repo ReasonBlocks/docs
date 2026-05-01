@@ -1,0 +1,98 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "ReasonBlocks",
+  "theme": "luma",
+  "favicon": "https://media.brand.dev/62db008c-64df-4c93-9e5d-20dfb1e4507f.png",
+  "colors": {
+    "primary": "#7c7c7c",
+    "light": "#080808",
+    "dark": "#a4a4a4"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/ReasonBlocks/sdk"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/fsm-states",
+              "concepts/e-traces",
+              "concepts/monitors"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/langchain",
+              "guides/openai-agents",
+              "guides/model-routing",
+              "guides/codebase-memory",
+              "guides/token-saving"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/reasonblocks-config",
+              "configuration/monitor-profiles",
+              "configuration/advanced"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting/faq",
+              "troubleshooting/common-issues"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "SDK Classes",
+            "pages": [
+              "api-reference/reasonblocks",
+              "api-reference/codebase-memory",
+              "api-reference/import-graph",
+              "api-reference/token-saving-middleware"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "api-reference/types/fsm-state",
+              "api-reference/types/step-record",
+              "api-reference/types/e-trace"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "api-reference/integrations/langchain-tools",
+              "api-reference/integrations/claude-tools",
+              "api-reference/integrations/openai-tools"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

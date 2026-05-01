@@ -1,0 +1,95 @@
+---
+title: "E-trace steering injection explained"
+description: "How ReasonBlocks injects instance-level, pattern-level, and universal guidance into your agent via E1, E2, and E3 traces appended to the system message."
+---
+
+E-traces are the steering mechanism ReasonBlocks uses to guide your agent away from failure modes. When the health monitors detect trouble — or when the agent is on its first call — ReasonBlocks retrieves relevant guidance from the ReasonBlocks API and appends it to the system message. The agent reads that guidance as part of its context and adjusts its behavior without any change to the conversation history.
+
+There are three tiers, each operating at a different scope and with different retrieval logic. Understanding which tier fires when helps you reason about what guidance your agent is receiving at any given step.
+
+## The three tiers
+
+<Tabs>
+  <Tab title="E1 — Instance-level">
+    **E1 patterns are customer-scoped, retrieved by semantic similarity, and gated behind the health monitors.**
+
+    E1 retrieves the single most similar pattern (`top_k=1`) from your organization's pattern library. The similarity threshold enforced by the API is **0.8** — only a very close match triggers an injection. Because E1 queries involve a vector search, it is only invoked when the session shows signs of trouble.
+
+    **E1 fires when any of the following is true:**
+    - At least one monitor has fired on the current step (score ≥ 0.6).
+    - The composite monitor score on the current step exceeds **0.15**.
+    - At least one monitor fired on either of the two previous steps in the session.
+
+    If no monitors have ever been configured, E1 is allowed to fire unconditionally, preserving backward compatibility.
+
+    E1 never fires more than once per run by default (`max_calls=1`). This prevents repeated injection of the same instance-level guidance once it has been delivered.
+
+    <Note>
+      E1 is completely skipped — no query is issued — when the FSM is in `FAST` state. When the agent is sailing through easy steps, instance-level guidance would add latency without benefit.
+    </Note>
+  </Tab>
+
+  <Tab title="E2 — Pattern-level">
+    **E2 patterns cover common agent failure modes and are retrieved based on the current failure classification.**
+
+    E2 retrieves up to **two** patterns (`top_k=2`) from the shared pattern library. When the health monitors have produced a `failure_type` classification (such as a loop or thrashing category), E2 narrows its metadata filter to that failure family so the results are more targeted.
+
+    E2 fires on scored steps when the E-trace pipeline is not bypassed (i.e., not in `FAST` state). It also fires at most once per run (`max_calls=1`).
+
+    The query context is built from the last five steps' thoughts, giving E2 a broader view of the recent trajectory than E1's three-step window.
+  </Tab>
+
+  <Tab title="E3 — Universal rules">
+    **E3 patterns are universal standing rules that apply to every agent run. They fire exactly once: on the very first call.**
+
+    E3 fetches every available universal pattern (up to 32) without a similarity query or gate. There is no threshold, no monitor requirement, and no FSM condition — E3 always fires on step zero, regardless of what the agent has done.
+
+    Because E3 fires only once and its content does not change between steps, it is well suited for baseline behavioral rules: formatting conventions, tool usage guidance, and other invariants that should hold throughout the run.
+
+    E3 patterns are rendered using the final post-routing model identifier so the format can be adapted to the model family that will actually receive them.
+  </Tab>
+</Tabs>
+
+## How injections reach the system message
+
+All retrieved patterns are assembled and appended to the system message as a single block:
+
+```
+[REASONBLOCKS]
+<rendered guidance text>
+```
+
+This block is a separate content block from your base system prompt, which means it can be cached independently. ReasonBlocks marks the base system prompt with an Anthropic `cache_control: ephemeral` marker so it hits the prompt cache on every step. The `[REASONBLOCKS]` block rides uncached — its content varies per step, so it must never bust the base prompt's cache key.
+
+<Note>
+  The `cache_control` marker is a no-op on non-Anthropic providers. It is safe to use ReasonBlocks with OpenAI or Gemini models; the marker is simply ignored.
+</Note>
+
+On steps where no injections are warranted (for example, a `FAST`-state step), the `[REASONBLOCKS]` block is omitted entirely. The base system prompt is still wrapped with `cache_control` unconditionally so every step benefits from cache hits.
+
+## The E1 gate in detail
+
+The E1 gate exists to avoid issuing vector search queries on every step of a healthy run. Pattern retrieval adds latency, and most steps in a well-functioning agent do not need instance-level steering.
+
+The gate uses a lookback window of **two prior steps** in addition to the current step's signal:
+
+```
+allow E1 if:
+  current_eval.fired is non-empty
+  OR current_eval.composite > 0.15
+  OR any monitor fired on the previous 2 steps
+```
+
+This means a single monitor firing opens the E1 gate for the next two steps, ensuring continuity of guidance even if the monitor score dips briefly.
+
+<Warning>
+  If you disable monitors entirely, E1 falls back to firing unconditionally on every eligible step. Consider this tradeoff when deciding whether to include monitors in your configuration.
+</Warning>
+
+## Summary
+
+| Tier | Scope          | Retrieval        | Top-k | Similarity gate | Fires when                              |
+|------|----------------|------------------|-------|-----------------|-----------------------------------------|
+| E1   | Instance       | Vector search    | 1     | 0.8             | Monitor fired or composite score > 0.15 |
+| E2   | Pattern shared | Vector search    | 2     | 0.7 (API-side)  | Any scored step (not FAST)              |
+| E3   | Universal      | Scroll-all       | 32    | None            | First call only                         |

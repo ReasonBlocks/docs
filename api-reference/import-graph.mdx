@@ -1,0 +1,267 @@
+---
+title: "ImportGraph class reference"
+description: "API reference for ImportGraph — build Python import graphs and query the blast radius of changed files to drive targeted cache invalidation."
+---
+
+`ImportGraph` builds a directed dependency graph from Python source files and lets you query which files are affected when a given file changes. The core use case is cache invalidation: before re-reviewing a changed file, you expand the set of affected files to include everything that imports it, then call `CodebaseMemory.invalidate()` on the expanded set to keep the findings store consistent.
+
+<Note>
+  `ImportGraph` requires `networkx`. Install it with `pip install networkx` before calling `build_from_files()`. If `networkx` is not installed, `build_from_files()` raises an `ImportError` with installation instructions. Constructing an `ImportGraph` and querying it without calling `build_from_files()` does not require `networkx`.
+</Note>
+
+## Constructor
+
+```python
+from reasonblocks import ImportGraph
+
+graph = ImportGraph()
+```
+
+`ImportGraph()` takes no parameters. Call `build_from_files()` to populate the graph before running any queries.
+
+---
+
+## `build_from_files()`
+
+Parses each file's imports with Python's `ast` module and wires up directed edges. An edge from `A` to `B` means "A imports B".
+
+```python
+import pathlib
+
+# Load all .py files from a local repo
+files = {
+    str(p): p.read_text()
+    for p in pathlib.Path("myrepo").rglob("*.py")
+}
+
+graph = ImportGraph()
+graph.build_from_files(files)
+
+print(graph.stats())
+# {'nodes': 214, 'edges': 891}
+```
+
+<ParamField path="files" type="object" required>
+  A dict mapping file paths to their source code strings — `{path: source_code}`. Paths that can't be parsed (syntax errors, binary content) are silently skipped. Only `.py` and `.pyi` files are processed; other extensions are ignored. Check `stats()` after building to see how many nodes and edges were created.
+</ParamField>
+
+**Returns** `ImportGraph` — returns `self` so you can chain the call:
+
+```python
+graph = ImportGraph().build_from_files(files)
+```
+
+---
+
+## `blast_radius()`
+
+Returns every file affected by changes in the given set of files. The result includes the changed files themselves plus their transitive dependents — files that import them — up to `depth` hops away.
+
+```python
+affected = graph.blast_radius(
+    changed_files=["pydantic/main.py"],
+    depth=1,
+)
+# {'pydantic/main.py', 'tests/test_models.py', 'pydantic/__init__.py'}
+
+# Invalidate the full blast radius before re-reviewing
+memory.invalidate(list(affected))
+```
+
+<Warning>
+  At high `depth` values (3+), the blast radius tends to expand to cover most of the repository, which makes invalidation overly broad and loses signal. Keep `depth` at 1 or 2 in practice.
+</Warning>
+
+<ParamField path="changed_files" type="string[]" required>
+  An iterable of file paths that have changed. Files not present in the graph are included in the returned set unchanged (they are never silently dropped).
+</ParamField>
+
+<ParamField path="depth" type="integer" default="1">
+  How many hops of importer traversal to include.
+
+  - `0` — returns only the changed files themselves.
+  - `1` — adds direct importers (files that directly import the changed files). This is the default and usually the right choice.
+  - `2` — adds importers-of-importers. Use sparingly.
+</ParamField>
+
+<ResponseField name="return" type="set[str]">
+  The set of affected file paths including the original `changed_files`.
+</ResponseField>
+
+---
+
+## `importers()`
+
+Returns the files that directly import the given file — its immediate dependents in the graph.
+
+```python
+dependents = graph.importers("pydantic/main.py")
+# ['tests/test_models.py', 'pydantic/__init__.py']
+```
+
+<ParamField path="file_path" type="string" required>
+  The file to look up. Returns an empty list if the file is not in the graph or if the graph has not been built.
+</ParamField>
+
+<ResponseField name="return" type="list[str]">
+  A list of file paths that import `file_path`. Order is not guaranteed.
+</ResponseField>
+
+---
+
+## `dependencies()`
+
+Returns the files that the given file imports — its outgoing edges in the graph.
+
+```python
+deps = graph.dependencies("pydantic/main.py")
+# ['pydantic/fields.py', 'pydantic/validators.py', 'pydantic/types.py']
+```
+
+<ParamField path="file_path" type="string" required>
+  The file to look up. Returns an empty list if the file is not in the graph or if the graph has not been built.
+</ParamField>
+
+<ResponseField name="return" type="list[str]">
+  A list of file paths that `file_path` imports. Order is not guaranteed.
+</ResponseField>
+
+---
+
+## `contains()`
+
+Reports whether the given file path is a node in the graph.
+
+```python
+if graph.contains("pydantic/main.py"):
+    print("File is tracked in the import graph")
+```
+
+<ParamField path="file_path" type="string" required>
+  The file path to check.
+</ParamField>
+
+<ResponseField name="return" type="boolean">
+  `True` if the path is in the graph, `False` otherwise (including when the graph has not been built).
+</ResponseField>
+
+---
+
+## `resolve()`
+
+Fuzzy-resolves a file path to a canonical node in the graph. Tries an exact match first; if that fails, tries a suffix match so that `"main.py"` resolves to `"pydantic/main.py"`.
+
+```python
+canonical = graph.resolve("main.py")
+# 'pydantic/main.py'
+```
+
+<ParamField path="file_path" type="string" required>
+  The path to resolve. Can be a bare filename, a partial path, or a full path.
+</ParamField>
+
+<ResponseField name="return" type="string | None">
+  The canonical node path from the graph, or `None` if no match is found or the graph has not been built.
+</ResponseField>
+
+---
+
+## `stats()`
+
+Returns summary counters for the built graph. Useful for logging after `build_from_files()` to confirm the graph was populated.
+
+```python
+graph.build_from_files(files)
+print(graph.stats())
+# {'nodes': 214, 'edges': 891}
+```
+
+<ResponseField name="return" type="dict[str, int]">
+  A dict with two integer fields:
+
+  <Expandable title="Stats fields">
+    <ResponseField name="nodes" type="integer">
+      The number of files (nodes) in the graph.
+    </ResponseField>
+    <ResponseField name="edges" type="integer">
+      The number of import relationships (directed edges) in the graph.
+    </ResponseField>
+  </Expandable>
+
+  Returns `{"nodes": 0, "edges": 0}` when the graph has not been built.
+</ResponseField>
+
+---
+
+## `format_impact()`
+
+Produces a human-readable impact analysis string for a given file, suitable for returning directly from an LLM tool observation.
+
+```python
+summary = graph.format_impact("pydantic/main.py")
+print(summary)
+# Impact analysis for pydantic/main.py:
+#   Imported by 3 files (dependents -- affected if this file breaks):
+#     <- tests/test_models.py
+#     <- pydantic/__init__.py
+#     <- examples/basic.py
+#   Imports 4 files (dependencies -- this file relies on):
+#     -> pydantic/fields.py
+#     -> pydantic/validators.py
+#     -> pydantic/types.py
+#     -> pydantic/utils.py
+```
+
+The output lists up to 15 importers and 15 dependencies by default. When there are more, a `(+N more)` line is appended.
+
+<ParamField path="file_path" type="string" required>
+  The file to analyze. The path is first run through `resolve()`, so bare filenames and partial paths work. Returns a descriptive message string if the file is not in the graph.
+</ParamField>
+
+<ResponseField name="return" type="string">
+  A multi-line formatted string showing the file's importers and dependencies. Returns `"(file not in import graph: {file_path})"` when the file cannot be resolved.
+</ResponseField>
+
+---
+
+## Complete example
+
+The following example shows the full workflow: build the graph, find the blast radius of a changed file, and invalidate the affected findings.
+
+<CodeGroup>
+
+```python Build, query, and invalidate
+import pathlib
+from reasonblocks import ImportGraph, CodebaseMemory
+
+# Load source files
+files = {
+    str(p): p.read_text()
+    for p in pathlib.Path("myrepo").rglob("*.py")
+}
+
+# Build the graph
+graph = ImportGraph().build_from_files(files)
+print(graph.stats())  # {'nodes': 214, 'edges': 891}
+
+# Which files are affected by a change to auth.py?
+affected = graph.blast_radius(
+    changed_files=["app/auth.py"],
+    depth=1,
+)
+print(affected)
+# {'app/auth.py', 'app/views.py', 'tests/test_auth.py'}
+
+# Print a readable impact summary
+print(graph.format_impact("app/auth.py"))
+
+# Invalidate stale findings before re-reviewing
+memory = CodebaseMemory(
+    codebase_id="myorg_myrepo",
+    api_key="rb_live_...",
+)
+deleted = memory.invalidate(list(affected))
+print(f"Invalidated {deleted} stale findings")
+```
+
+</CodeGroup>

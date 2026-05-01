@@ -1,0 +1,190 @@
+---
+title: "Frequently asked questions"
+description: "Answers to common questions about ReasonBlocks setup, API keys, E-traces, FSM behavior, middleware ordering, and run tagging for the dashboard."
+---
+
+These questions come up most often when teams are getting started with ReasonBlocks or moving from a prototype to a production deployment.
+
+<AccordionGroup>
+  <Accordion title="What does 'E-traces disabled' mean in logs?">
+    When the FSM enters the `FAST` state, ReasonBlocks skips the E-trace retrieval pipeline (E1, E2, E3) for that step and logs:
+
+    ```
+    FSM=FAST, e-traces skipped
+    ```
+
+    This is expected behavior — FAST state means the agent is sailing through easy steps, and the pattern-store query overhead is not worth paying. Monitor scoring still runs so loop detection remains active.
+
+    You can confirm this by inspecting `mw.step_log`:
+
+    ```python
+    for entry in mw.step_log:
+        if entry.skipped_reason:
+            print(f"step {entry.step}: {entry.skipped_reason}")
+    ```
+
+    If you see this message on steps that you believe should not be classified as easy, lower `fast_threshold` in `fsm_thresholds`:
+
+    ```python
+    rb = ReasonBlocks(
+        api_key="rb_live_...",
+        fsm_thresholds={"fast_threshold": 0.10},
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="Why is my agent not getting any steering injections?">
+    Several things can prevent injections from appearing:
+
+    **1. `e_traces_enabled=False`**
+
+    Check whether you passed `e_traces_enabled=False` to the constructor. That flag disables the entire E-trace pipeline. Set it back to `True` (the default).
+
+    **2. FSM is in FAST state**
+
+    If the agent's difficulty scores are consistently low, the FSM enters FAST and skips E-traces. Inspect `mw.step_log[n].fsm_state` to see which state each step was scored in.
+
+    **3. Monitor composite is below the E1 gate threshold**
+
+    E1 retrieval is gated by monitor health. If the composite monitor score stays below `0.15` and no monitors have fired in the last two steps, E1 is skipped even in NORMAL state. This is by design — E1 only retrieves when there is a signal of trouble.
+
+    **4. API key or base_url is wrong**
+
+    If API calls are failing silently (failures in `before_model` are caught and logged as warnings), the middleware continues without injecting anything. Set your Python logger to `DEBUG` for the `reasonblocks` namespace:
+
+    ```python
+    import logging
+    logging.getLogger("reasonblocks").setLevel(logging.DEBUG)
+    ```
+
+    **5. No patterns in the store for your customer scope**
+
+    If `customer_id` is set but there are no distilled E1 patterns for that customer yet, E1 returns nothing. E2 and E3 will still fire — check `mw.step_log[n].injection_sources` to see which tiers contributed to each step.
+  </Accordion>
+
+  <Accordion title="How do I check what ReasonBlocks injected on each step?">
+    `ReasonBlocksMiddleware` maintains a `step_log` list of `StepLogEntry` objects, one per model call. Each entry includes full injection details:
+
+    ```python
+    mw = rb.middleware(run_id="my-run")
+
+    # ... run your agent ...
+
+    for entry in mw.step_log:
+        print(f"step {entry.step} | state={entry.fsm_state}")
+        for source, text in zip(entry.injection_sources, entry.intervention_texts):
+            print(f"  [{source}] {text[:120]}")
+        if entry.monitors_fired:
+            print(f"  monitors fired: {entry.monitors_fired}")
+    ```
+
+    The relevant fields are:
+
+    | Field | Contents |
+    |---|---|
+    | `injection_sources` | List of injection class names (e.g. `"E1Injection"`, `"MonitorSteeringInjection"`) |
+    | `injections` | Short previews (first 150 chars) of each injection |
+    | `intervention_texts` | Full injection text as sent to the model |
+    | `monitors_fired` | Monitor names whose individual score was at or above `0.6` |
+    | `fsm_state` | The FSM state at the time of the model call |
+    | `difficulty` | The scored difficulty float for the step |
+  </Accordion>
+
+  <Accordion title="Can I use ReasonBlocks without the hosted API?">
+    Yes. Set `base_url` to your self-hosted ReasonBlocks API endpoint:
+
+    ```python
+    rb = ReasonBlocks(
+        api_key="rb_live_...",
+        base_url="https://rb-api.internal.acme.com",
+    )
+    ```
+
+    This routes all E-trace lookups, monitor evaluations, and live telemetry to your self-hosted instance. The SDK itself has no hardcoded dependency on the hosted endpoint — `base_url` is forwarded to every internal API client the middleware constructs.
+
+    If you want to run with zero network calls at all (for example, in CI or isolated environments), you can disable live streaming and E-traces together:
+
+    ```python
+    rb = ReasonBlocks(
+        api_key="rb_live_...",
+        e_traces_enabled=False,
+        live_streaming_enabled=False,
+    )
+    ```
+
+    In this mode, only the FSM state machine and local monitor scoring remain active. No outbound network calls are made.
+  </Accordion>
+
+  <Accordion title="What's the right middleware ordering when stacking with TokenSavingMiddleware?">
+    `TokenSavingMiddleware` must always come **last** in the middleware list. It needs to run after `ReasonBlocksMiddleware` and `GeneralMonitorMiddleware` so it can compress whatever those earlier middleware have injected into the message history before the LLM call goes out.
+
+    ```python
+    from reasonblocks import ReasonBlocksMiddleware, TokenSavingMiddleware, GeneralMonitorMiddleware
+
+    # Correct order
+    middleware = [
+        ReasonBlocksMiddleware(...),
+        GeneralMonitorMiddleware(...),  # optional
+        TokenSavingMiddleware(...),     # always last
+    ]
+    ```
+
+    If you use `build_middleware()` or `rb.middleware()`, the ordering is handled automatically — you do not need to think about it. The manual ordering only matters if you construct the middleware classes directly.
+
+    <Warning>
+      Putting `TokenSavingMiddleware` before `ReasonBlocksMiddleware` will cause it to compress the message history before injections are added, which means the LLM sees a compressed history without the steering guidance. This results in silent correctness failures, not errors.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="What happens if the ReasonBlocks API is down?">
+    All failures inside `before_model` and `wrap_model_call` are caught, logged as warnings, and swallowed. Your agent continues running normally — it just does not receive any steering injections for the steps where the API was unavailable.
+
+    You will see log lines like:
+
+    ```
+    WARNING reasonblocks.middleware: before_model failed, continuing unmodified
+    ```
+
+    To monitor for these degraded steps in production, set up an alert on the `reasonblocks` logger at `WARNING` level. The `step_log` will show steps where `injection_sources` is empty even though `fsm_state` is `NORMAL` or `SLOW` — that is a sign that the API call failed silently.
+
+    Live telemetry events are also fire-and-forget. If the telemetry endpoint is unreachable, events are dropped after a timeout — the agent loop is never blocked waiting for telemetry to flush.
+  </Accordion>
+
+  <Accordion title="How do I tag runs so I can filter them in the dashboard?">
+    Pass a `metadata` dict to `rb.middleware()` with any key-value pairs you want to appear on the run row:
+
+    ```python
+    mw = rb.middleware(
+        run_id="pr-42-attempt-3",
+        agent_name="reviewer",
+        task="review PR #42",
+        metadata={
+            "pr_number": 42,
+            "repo": "acme/backend",
+            "experiment": "sonnet-v-haiku-routing",
+            "ab_group": "B",
+            "triggered_by": "github_actions",
+        },
+    )
+    ```
+
+    The `metadata` dict is stored as JSON on the run record and is queryable in the dashboard's run filter. Use it for anything that does not fit the named fields (`agent_name`, `task`, `model`, `codebase_id`, `org_id`, `project_id`). Values can be strings, numbers, or booleans.
+  </Accordion>
+
+  <Accordion title="What is the difference between org_id and project_id?">
+    Both are multi-tenant scoping fields that appear on the run record in the dashboard.
+
+    - **`org_id`** identifies the organization (your customer or team). When you use a per-customer `rb_live_*` API key that is bound to a specific org, the ReasonBlocks API overrides this with the key's authoritative org regardless of what you pass.
+
+    - **`project_id`** identifies a specific project or workload within the org. It is a finer-grained grouping that lets you filter runs by project in the dashboard — for example, separate your `infra-review` agent from your `frontend-review` agent within the same org.
+
+    Both default to `"default"`. For teams that do not need multi-tenancy, leaving them at the default is fine. For SaaS deployments where each customer is a separate org, set `org_id` to your customer's identifier and `project_id` to the logical name of the agent workload.
+
+    ```python
+    mw = rb.middleware(
+        org_id="customer-acme",
+        project_id="code-review-agent",
+    )
+    ```
+  </Accordion>
+</AccordionGroup>

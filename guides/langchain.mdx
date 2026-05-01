@@ -1,0 +1,221 @@
+---
+title: "Use ReasonBlocks with LangChain"
+description: "Step-by-step guide for adding ReasonBlocks middleware to LangChain and LangGraph agents, including run tagging, failure tracking, and CodebaseMemory tools."
+---
+
+ReasonBlocks integrates with LangChain and LangGraph through a standard middleware interface. You pass a `ReasonBlocksMiddleware` instance into `create_agent`, and the SDK automatically hooks into `before_model` and `wrap_model_call` on every step — scoring the agent's reasoning, running monitors, and injecting steering guidance into the system prompt.
+
+<Steps>
+  <Step title="Install the SDK">
+    Install ReasonBlocks alongside your LangChain dependencies.
+
+    ```bash
+    pip install reasonblocks langchain langchain-anthropic langgraph
+    ```
+  </Step>
+
+  <Step title="Initialize ReasonBlocks">
+    Create a single `ReasonBlocks` instance for your application. Pass your API key and any global configuration you want to apply across all runs.
+
+    ```python
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(api_key="rb_live_...")
+    ```
+
+    The `ReasonBlocks` object is reusable — create it once at application startup and call `rb.middleware()` for each new agent run.
+  </Step>
+
+  <Step title="Add middleware to create_agent">
+    Call `rb.middleware()` when constructing each agent. The returned `ReasonBlocksMiddleware` is a single-use object scoped to one run.
+
+    ```python
+    from langchain.agents import create_agent
+
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[search_codebase, read_file, edit_file, run_tests],
+        system_prompt="You are a senior software engineer. Fix bugs by searching, reading, editing, and testing.",
+        middleware=[rb.middleware()],
+    )
+
+    result = agent.invoke(
+        {"messages": [("user", "There's a TypeError in the request handler. Find and fix it.")]}
+    )
+    ```
+  </Step>
+
+  <Step title="Tag runs for the dashboard">
+    Pass identifying metadata to `rb.middleware()` so each run lands on the dashboard with a useful label. All parameters are optional — omit any you don't need.
+
+    ```python
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[...],
+        system_prompt="...",
+        middleware=[
+            rb.middleware(
+                run_id="my-run-1",                          # auto-generated UUID if omitted
+                agent_name="bugfixer",                      # free-form filter key
+                task="fix the TypeError in handler.py",     # shown on the run row
+                framework="langchain",                      # default value
+                model="claude-sonnet-4-20250514",           # for display only
+                codebase_id="myrepo@sha:abc123",            # scopes E1 retrieval
+                org_id="6d3f...",                           # UUID; "default" if omitted
+                project_id="a91b...",                       # UUID; "default" if omitted
+            )
+        ],
+    )
+    ```
+
+    <Tip>
+      Your `org_id` and `project_id` are shown next to a copy-pasteable snippet on the dashboard's **Quickstart** page. If your API key is a per-org `rb_live_*` key, the ReasonBlocks API overrides these values automatically — you can leave them at their defaults.
+    </Tip>
+
+    The `metadata` parameter accepts a free-form dict for any tags that don't fit the named fields:
+
+    ```python
+    rb.middleware(
+        agent_name="pr-reviewer",
+        metadata={"pr_number": 42, "experiment": "v2-prompt"},
+    )
+    ```
+  </Step>
+
+  <Step title="Track failures with the context manager">
+    Wrap your `agent.invoke()` call in a `with` block to get automatic failure tracking. If an exception propagates out of the block, the middleware records `failure: <ExceptionType>` as the run outcome instead of `success`.
+
+    ```python
+    mw = rb.middleware(agent_name="bugfixer", task="fix TypeError")
+
+    with mw:
+        result = agent.invoke({"messages": [("user", "Fix the bug.")]})
+    ```
+
+    When the agent returns normally but the outcome was still a failure — for example, the agent ran to completion but produced a wrong answer — call `mark_failure` explicitly before the block exits:
+
+    ```python
+    mw = rb.middleware(agent_name="bugfixer", task="fix TypeError")
+
+    with mw:
+        result = agent.invoke({"messages": [("user", "Fix the bug.")]})
+        if not tests_pass(result):
+            mw.mark_failure(reason="tests_still_failing")
+    ```
+  </Step>
+
+  <Step title="Inspect the step log">
+    After the run, `mw.step_log` contains one `StepLogEntry` per model call. Each entry includes the FSM state, difficulty score, which monitors fired, and a preview of any injected guidance.
+
+    ```python
+    mw = rb.middleware(agent_name="bugfixer")
+    agent = create_agent(..., middleware=[mw])
+
+    result = agent.invoke({"messages": [("user", "Fix the bug.")]})
+
+    for entry in mw.step_log:
+        print(f"Step {entry.step}: state={entry.fsm_state} difficulty={entry.difficulty:.3f}")
+        if entry.monitors_fired:
+            print(f"  Monitors: {entry.monitors_fired}")
+        if entry.injections:
+            print(f"  Injections: {entry.injections}")
+    ```
+
+    The full per-entry dict is available via `entry.as_dict()`.
+  </Step>
+</Steps>
+
+## Add CodebaseMemory tools
+
+`make_langchain_tools` wraps a `CodebaseMemory` (and optionally an `ImportGraph`) into standard LangChain `@tool` functions. Add them to your agent's tool list so the agent can recall prior findings and persist new ones during a run.
+
+```python
+from reasonblocks import ReasonBlocks
+from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks.integrations.langchain_tools import make_langchain_tools
+
+memory = CodebaseMemory(
+    codebase_id="myrepo@sha:abc123",
+    api_key="rb_live_...",
+)
+
+rb_tools = make_langchain_tools(memory)
+
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    tools=[*rb_tools, search_codebase, read_file, edit_file, run_tests],
+    system_prompt="...",
+    middleware=[rb.middleware(codebase_id="myrepo@sha:abc123")],
+)
+```
+
+This adds three tools to the agent:
+
+- **`recall_findings`** — semantic search over prior findings for the codebase
+- **`store_finding`** — persist a new finding for future runs
+- **`impact_analysis`** — blast-radius query via `ImportGraph` (only added when a graph is provided)
+
+To include `impact_analysis`, pass a built `ImportGraph` as the second argument:
+
+```python
+from reasonblocks.import_graph import ImportGraph
+
+graph = ImportGraph()
+graph.build_from_files({path: source for path, source in py_files.items()})
+
+rb_tools = make_langchain_tools(memory, graph)
+```
+
+<Note>
+  `ImportGraph.build_from_files` requires `networkx`. Install it with `pip install networkx`.
+</Note>
+
+You can also disable individual tools if you want a read-only agent:
+
+```python
+rb_tools = make_langchain_tools(memory, enable_store=False)
+```
+
+## Complete example
+
+```python
+import os
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+from reasonblocks import ReasonBlocks
+from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks.integrations.langchain_tools import make_langchain_tools
+
+rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+memory = CodebaseMemory(
+    codebase_id="my-org/my-repo",
+    api_key=os.environ["REASONBLOCKS_API_KEY"],
+)
+rb_tools = make_langchain_tools(memory)
+
+@tool
+def search_codebase(query: str) -> str:
+    """Search the codebase for files matching a query."""
+    ...
+
+@tool
+def read_file(path: str) -> str:
+    """Read the contents of a file."""
+    ...
+
+mw = rb.middleware(
+    agent_name="bugfixer",
+    task="fix the TypeError in handler.py",
+    codebase_id="my-org/my-repo",
+)
+
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-20250514",
+    tools=[*rb_tools, search_codebase, read_file],
+    system_prompt="You are a senior software engineer. Fix bugs methodically.",
+    middleware=[mw],
+)
+
+with mw:
+    result = agent.invoke({"messages": [("user", "Fix the bug.")]})
+```

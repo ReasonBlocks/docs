@@ -1,0 +1,236 @@
+---
+title: "Reduce token usage with TokenSavingMiddleware"
+description: "Compress stale tool outputs, nudge stuck agents to exit early, and cut LLM costs with TokenSavingMiddleware — configurable, stackable, and framework-agnostic."
+---
+
+`TokenSavingMiddleware` reduces context window usage through two independent mechanisms. The first compresses old tool observations using head+tail truncation, keeping the most recent tool messages intact so the agent retains full visibility into its current step. The second injects a single nudge message when the agent appears stuck — high loop or hedging signals after many model calls — telling it to submit its best answer rather than continuing.
+
+Both levers are on by default and independently toggleable. The middleware never breaks the agent loop: any internal failure is logged and swallowed.
+
+## Simple setup
+
+<Tabs>
+  <Tab title="Standalone">
+    Use `TokenSavingMiddleware` on its own when you don't need E-trace injection or FSM steering.
+
+    ```python
+    from langchain.agents import create_agent
+    from reasonblocks.token_saving import TokenSavingMiddleware, default_suite_signals
+
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[...],
+        system_prompt="...",
+        middleware=[
+            TokenSavingMiddleware(
+                compress_threshold_chars=1800,   # compress tool outputs longer than this
+                keep_recent_tool_messages=2,     # leave the last N tool messages uncompressed
+                enable_early_exit=True,
+                signals_fn=default_suite_signals,
+            ),
+        ],
+    )
+    ```
+  </Tab>
+  <Tab title="Stacked with ReasonBlocksMiddleware">
+    When stacking with `ReasonBlocksMiddleware`, place `TokenSavingMiddleware` last. It runs after steering injections are queued, so it compresses history that includes any injected content before the model call goes out.
+
+    ```python
+    from langchain.agents import create_agent
+    from reasonblocks import ReasonBlocks
+    from reasonblocks.token_saving import TokenSavingMiddleware, default_suite_signals
+
+    rb = ReasonBlocks(api_key="rb_live_...")
+
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[...],
+        system_prompt="...",
+        middleware=[
+            rb.middleware(agent_name="bugfixer"),
+            TokenSavingMiddleware(
+                signals_fn=default_suite_signals,
+            ),
+        ],
+    )
+    ```
+
+    <Note>
+      If you use `ReasonBlocksConfig` and `build_middleware`, set `enable_token_saving=True` in the config and the ordering is handled for you.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Tool-output compression
+
+Old `ToolMessage` bodies in the message history are compressed once they exceed `compress_threshold_chars`. The middleware keeps the first `head_keep_chars` and last `tail_keep_chars` characters, replaces the middle with an omission marker, and emits the replaced messages via LangGraph's `add_messages` reducer (same-ID replacement, not append).
+
+The most recent `keep_recent_tool_messages` tool messages are always left untouched.
+
+```python
+TokenSavingMiddleware(
+    compress_threshold_chars=1800,   # default: 1800 chars
+    head_keep_chars=900,             # default: 900 chars — keep this much from the start
+    tail_keep_chars=700,             # default: 700 chars — keep this much from the end
+    keep_recent_tool_messages=2,     # default: 2 — exempt these from compression
+    enable_compression=True,         # default: True
+)
+```
+
+You can also call `compress_tool_output` as a standalone utility outside the middleware:
+
+```python
+from reasonblocks.token_saving import compress_tool_output
+
+raw = some_tool.run(args)
+compressed = compress_tool_output(
+    raw,
+    threshold_chars=1800,
+    head_chars=900,
+    tail_chars=700,
+)
+```
+
+## Early-exit nudge
+
+When the agent has made at least `early_exit_min_call_index` model calls (default 40), `TokenSavingMiddleware` evaluates the trajectory using `signals_fn`. If the signals indicate the agent is stuck, it injects a `HumanMessage` telling the agent to submit its current best answer.
+
+The built-in `default_suite_signals` runs the ReasonBlocks 6-monitor suite and returns per-monitor scores. The early-exit fires when:
+
+- `streak > 0.7` (repeated identical tool calls), OR
+- `hedge > 0.6` AND `diversity > 0.5` (hedging with low action diversity)
+
+```python
+from reasonblocks.token_saving import TokenSavingMiddleware, default_suite_signals
+
+TokenSavingMiddleware(
+    early_exit_min_call_index=40,           # default: wait at least 40 model calls
+    enable_early_exit=True,                 # default: True
+    signals_fn=default_suite_signals,       # pass your own function to customize detection
+)
+```
+
+The injected message reads:
+
+> You appear to be stuck in a loop. Stop investigating and submit your current best answer now using whatever submission tool your task expects. Do not start another investigation.
+
+You can override this text:
+
+```python
+TokenSavingMiddleware(
+    signals_fn=default_suite_signals,
+    early_exit_text="You've been running too long. Submit your answer using the submit_answer tool.",
+)
+```
+
+## Monitor effectiveness with TokenSavingStats
+
+`TokenSavingMiddleware` exposes a `stats` attribute with running counters. Read it after a run to see how much compression occurred:
+
+```python
+ts = TokenSavingMiddleware(signals_fn=default_suite_signals)
+agent = create_agent(..., middleware=[rb.middleware(), ts])
+result = agent.invoke(...)
+
+print(ts.stats.compressions)           # tool messages compressed
+print(ts.stats.chars_saved)            # total characters removed by head+tail compression
+print(ts.stats.early_exits)            # early-exit nudges injected
+print(ts.stats.replacements_emitted)   # list of per-step replacement counts
+```
+
+## Advanced: perplexity-based compression
+
+For long-running agents where head+tail compression isn't enough, `TokenSavingMiddleware` supports word-level keep/drop compression on stale messages using an LLM classifier (LLMLingua-2 style, prompt-only). This compresses both `ToolMessage` and `AIMessage` content proportionally to how old the message is.
+
+<Tabs>
+  <Tab title="Setup">
+    Enable perplexity compression by providing a `perplexity_classifier`. The easiest option is `make_anthropic_classifier`, which uses a small Anthropic model (Haiku by default) to decide which words to keep.
+
+    ```python
+    import anthropic
+    from reasonblocks.token_saving import (
+        TokenSavingMiddleware,
+        make_anthropic_classifier,
+        default_suite_signals,
+    )
+
+    client = anthropic.Anthropic()
+
+    classifier = make_anthropic_classifier(
+        client,
+        model="claude-haiku-4-5-20251001",   # small model — runs fast and cheap
+        target_keep_ratio=0.5,               # aim to keep 50% of words overall
+    )
+
+    ts = TokenSavingMiddleware(
+        signals_fn=default_suite_signals,
+        enable_perplexity_compression=True,
+        perplexity_classifier=classifier,
+    )
+    ```
+  </Tab>
+  <Tab title="Tuning">
+    Perplexity compression uses two tiers based on how many model calls ago a message was produced:
+
+    ```python
+    TokenSavingMiddleware(
+        enable_perplexity_compression=True,
+        perplexity_classifier=classifier,
+
+        # Messages from the last 3 calls get full fidelity
+        perplexity_recent_cutoff=3,
+
+        # Messages between 3 and 10 calls back → mid-tier compression
+        perplexity_mid_cutoff=10,
+        perplexity_keep_ratio_mid=0.55,    # keep 55% of words
+
+        # Messages 10+ calls back → heavy compression
+        perplexity_keep_ratio_old=0.30,    # keep 30% of words
+
+        # Words per classifier window (smaller = more API calls, finer decisions)
+        perplexity_window_words=50,
+    )
+    ```
+
+    Decisions are cached per message ID and keep ratio, so each message is only classified once regardless of how many times the middleware runs.
+
+    After a run, check the perplexity stats:
+
+    ```python
+    print(ts.stats.perplexity_compressions)    # messages compressed by perplexity
+    print(ts.stats.perplexity_chars_saved)     # characters removed
+    print(ts.stats.perplexity_cache_hits)      # classifier calls avoided by cache
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Perplexity compression calls an LLM classifier for each stale message window. On very long trajectories, this adds latency and cost proportional to the number of stale messages. The cache mitigates this on repeat calls, but plan for the extra overhead when first enabling it.
+</Warning>
+
+## Use ReasonBlocksConfig for full control
+
+If you want to manage all middleware from one place, use `ReasonBlocksConfig` and `build_middleware`. It assembles the full middleware stack in the correct order and exposes all `TokenSavingMiddleware` parameters as config fields.
+
+```python
+from reasonblocks import ReasonBlocks, ReasonBlocksAPI
+from reasonblocks.config import ReasonBlocksConfig, build_middleware
+
+rb = ReasonBlocks(api_key="rb_live_...")
+api = ReasonBlocksAPI(api_key="rb_live_...")
+
+config = ReasonBlocksConfig(
+    enable_token_saving=True,
+    ts_compress_threshold_chars=1800,
+    ts_keep_recent_tool_messages=2,
+    ts_enable_early_exit=True,
+    ts_enable_perplexity_compression=False,  # opt-in separately
+)
+
+# build_middleware requires a score_fn, fsm, and state_manager when
+# any of E1/E2/E3/monitor_steering are enabled. For the simplest case,
+# use rb.middleware() directly — ReasonBlocks assembles these for you.
+middleware = [rb.middleware(agent_name="bugfixer")]
+
+agent = create_agent(model=..., tools=..., middleware=middleware)
+```

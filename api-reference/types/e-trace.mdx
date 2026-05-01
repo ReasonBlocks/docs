@@ -1,0 +1,101 @@
+---
+title: "ETrace: retrieved steering pattern"
+description: "Reference for the ETrace dataclass — fields returned when ReasonBlocks retrieves a pattern from the pattern store to inject into the agent system prompt."
+---
+
+When ReasonBlocks determines that the agent needs steering, it queries the pattern store and retrieves one or more `ETrace` objects. Each `ETrace` represents a stored pattern — an instance-level memory, an abstracted failure signature, or a universal heuristic — ranked by similarity to the current trace context. The SDK then formats and injects the best-matching patterns into the system prompt before the next LLM call.
+
+```python
+from reasonblocks.types import ETrace
+```
+
+`ETrace` objects surface in `StepAssessment.e1_match` (the single best instance-level match) and `StepAssessment.e2_matches` (a list of pattern-level matches). You do not typically construct `ETrace` instances yourself; they are produced by the middleware during step assessment.
+
+## Fields
+
+<ResponseField name="tier" type="str" required>
+  The tier of the retrieved pattern. One of:
+
+  - **`"e1"`** — Instance-level. A record from a specific prior agent run (or the current run) that closely matches the current trace context. The most specific form of guidance.
+  - **`"e2"`** — Pattern-level. An abstracted failure pattern derived from multiple instances. Less specific than `e1` but broader in applicability.
+  - **`"e3"`** — Universal. A general heuristic or best-practice rule that applies regardless of the specific trace. Retrieved when no strong instance or pattern match is found.
+</ResponseField>
+
+<ResponseField name="similarity" type="float">
+  Cosine similarity score in the range `[0.0, 1.0]` indicating how closely this pattern matches the current trace context. Higher is a better match. The SDK uses `recall_threshold` (default `0.25`) to filter out low-quality matches before returning results. A score of `1.0` means an exact vector match.
+</ResponseField>
+
+<ResponseField name="pattern_id" type="str">
+  Unique identifier for this pattern in the ReasonBlocks pattern store. You can use `pattern_id` to look up or reference the pattern in the dashboard. Empty string if the pattern was not persisted (e.g., transient monitor-generated guidance).
+</ResponseField>
+
+<ResponseField name="fields" type="dict[str, Any]">
+  Raw pattern payload from the store. The exact keys depend on the pattern type, but typically include fields like `title`, `guidance`, `example`, and `tags`. The middleware uses this dict when assembling the injection text. Inspect it if you need to understand the raw content of a retrieved pattern.
+</ResponseField>
+
+<ResponseField name="failure_type" type="str | None">
+  Categorical failure label assigned by the server monitor during evaluation — for example `"loop"`, `"hedge"`, `"edit_revert"`, or `"test_repeat"`. `None` if the pattern was not associated with a specific monitor failure. Useful for understanding what class of problem the injected guidance addresses.
+</ResponseField>
+
+<ResponseField name="model_family" type="str">
+  The model family this pattern was originally recorded against, e.g. `"claude-3"`, `"gpt-4o"`, or `"gemini-1.5"`. An empty string means the pattern is model-agnostic. The SDK uses this field when filtering patterns for model-specific guidance.
+</ResponseField>
+
+<ResponseField name="level" type="str">
+  Legacy alias for `tier`, kept for compatibility with older callers. New code should read `tier` instead. Both fields carry the same value (`"e1"`, `"e2"`, or `"e3"`).
+</ResponseField>
+
+<ResponseField name="source_trace_id" type="str | None">
+  The `run_id` of the agent run this pattern was originally recorded from, if applicable. For `e1` patterns this is typically the trace that produced the matched memory. `None` for `e3` universal patterns and for patterns inserted manually into the store.
+</ResponseField>
+
+## Where ETrace appears
+
+`ETrace` objects are embedded in `StepAssessment`, which the middleware produces internally after each step:
+
+<ResponseField name="StepAssessment.e1_match" type="ETrace | None">
+  The single highest-similarity `e1` match for this step, or `None` if no instance-level pattern cleared the similarity threshold.
+</ResponseField>
+
+<ResponseField name="StepAssessment.e2_matches" type="list[ETrace]">
+  All `e2` (and `e3`) matches that cleared the similarity threshold, sorted by similarity descending. May be empty.
+</ResponseField>
+
+## Example
+
+This example shows how to read retrieved pattern metadata from a completed run. Note that `StepAssessment` objects are produced internally; you access the injected content via `StepRecord` and the full `TraceState`.
+
+<CodeGroup>
+
+```python Inspect retrieved patterns (internal access)
+# StepAssessment is produced internally by the middleware.
+# The fields below illustrate the structure; see TraceState / StepRecord
+# for the data you can access directly after a run.
+
+from reasonblocks.types import ETrace
+
+# Example ETrace from an e1 retrieval
+pattern: ETrace = ETrace(
+    tier="e1",
+    similarity=0.87,
+    pattern_id="pat_01hz9x4kj2",
+    fields={
+        "title": "Avoid re-reading unchanged files",
+        "guidance": "If your last observation showed no diff, do not read the file again.",
+    },
+    failure_type="loop",
+    model_family="claude-3",
+    source_trace_id="run-2024-11-05-abc",
+)
+
+print(pattern.tier)          # "e1"
+print(pattern.similarity)    # 0.87
+print(pattern.failure_type)  # "loop"
+print(pattern.fields["title"])
+```
+
+</CodeGroup>
+
+<Tip>
+  If you want to understand why the SDK injected a particular piece of guidance, check `StepAssessment.e1_match.failure_type` and `StepAssessment.e1_match.fields` for the pattern that was selected.
+</Tip>

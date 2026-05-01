@@ -1,0 +1,82 @@
+---
+title: "ReasonBlocks: intelligent steering for AI agents"
+description: "ReasonBlocks adds FSM-based step scoring, E-trace injection, and health monitoring to your LangChain and OpenAI Agents apps. One import, one init, one middleware."
+---
+
+ReasonBlocks is a Python SDK that makes AI agents smarter and more reliable. It wraps your LangChain or OpenAI Agents application with a middleware layer that scores each reasoning step, detects when the agent is struggling, and injects targeted guidance — all without changing your agent's logic or message history.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Add ReasonBlocks to your agent in under five minutes
+  </Card>
+  <Card title="How It Works" icon="gear" href="/concepts/how-it-works">
+    Understand FSM states, E-traces, and the monitoring pipeline
+  </Card>
+  <Card title="LangChain Guide" icon="link" href="/guides/langchain">
+    Step-by-step guide for LangChain and LangGraph agents
+  </Card>
+  <Card title="API Reference" icon="code" href="/api-reference/reasonblocks">
+    Full reference for the ReasonBlocks class and all SDK exports
+  </Card>
+</CardGroup>
+
+## What ReasonBlocks does
+
+ReasonBlocks sits between your agent loop and the LLM. On every step it:
+
+1. **Scores** the agent's reasoning for difficulty (hedging, errors, entity density)
+2. **Classifies** the run into a state — FAST, NORMAL, SLOW, or SKIP
+3. **Monitors** for unhealthy patterns like loops, repeated test failures, and edit thrashing
+4. **Injects** targeted E-trace guidance from a pattern store into the system prompt
+5. **Routes** the model call to a cheaper or more powerful model based on current difficulty
+
+<Steps>
+  <Step title="Install the SDK">
+    ```bash
+    pip install reasonblocks
+    ```
+  </Step>
+  <Step title="Initialize ReasonBlocks">
+    ```python
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(api_key="rb_live_...")
+    ```
+  </Step>
+  <Step title="Add middleware to your agent">
+    ```python
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[...],
+        system_prompt="...",
+        middleware=[rb.middleware()],
+    )
+    ```
+  </Step>
+  <Step title="Run your agent normally">
+    ReasonBlocks operates transparently. Your agent code is unchanged — steering happens inside the middleware.
+  </Step>
+</Steps>
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="E-Trace Injection" icon="brain" href="/concepts/e-traces">
+    Inject instance-level, pattern-level, and universal guidance from a live pattern store
+  </Card>
+  <Card title="FSM State Machine" icon="diagram-project" href="/concepts/fsm-states">
+    Track agent difficulty across FAST, NORMAL, SLOW, and SKIP states with hysteresis
+  </Card>
+  <Card title="Health Monitors" icon="heart-pulse" href="/concepts/monitors">
+    Detect loops, hedging, edit-revert thrashing, and test-repeat failures automatically
+  </Card>
+  <Card title="Model Routing" icon="shuffle" href="/guides/model-routing">
+    Route to Haiku on easy steps and Sonnet/Opus when the agent is struggling
+  </Card>
+  <Card title="Codebase Memory" icon="database" href="/guides/codebase-memory">
+    Persist and recall per-repo findings semantically across agent runs
+  </Card>
+  <Card title="Token Saving" icon="scissors" href="/guides/token-saving">
+    Compress stale tool outputs and nudge stuck agents to exit early
+  </Card>
+</CardGroup>

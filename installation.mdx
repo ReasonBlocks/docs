@@ -1,0 +1,162 @@
+---
+title: "Install and configure the ReasonBlocks SDK"
+description: "Install ReasonBlocks via pip, set your API key, and configure optional parameters like base URL for self-hosted deployments and E-trace retrieval."
+---
+
+ReasonBlocks is a standard Python package distributed on PyPI. Installation is a single `pip` command. This page covers the full installation process, all configuration options, and the environment variables the SDK reads at runtime.
+
+## Requirements
+
+- Python 3.10 or later
+- `langchain>=1.0`
+- `httpx>=0.27`
+
+Both `langchain` and `httpx` are declared as required dependencies and are installed automatically with the SDK.
+
+## Install the package
+
+```bash
+pip install reasonblocks
+```
+
+To install a specific version, pin it explicitly:
+
+```bash
+pip install "reasonblocks==0.1.0"
+```
+
+### Optional dependencies
+
+`ImportGraph` — the Python import graph and blast-radius query tool — requires `networkx`. It is not installed automatically. If you plan to use `ImportGraph`, install it separately:
+
+```bash
+pip install networkx
+```
+
+<Note>
+  The rest of the SDK (middleware, `CodebaseMemory`, E-trace injection, monitors) has no dependency on `networkx`. You only need it if you call `ImportGraph` directly.
+</Note>
+
+For local development and running the test suite, install the `dev` extras:
+
+```bash
+pip install "reasonblocks[dev]"
+```
+
+## Set your API key
+
+The SDK requires an API key to authenticate with the ReasonBlocks API. Get yours from the **Quickstart** page in the [ReasonBlocks dashboard](https://app.reasonblocks.com).
+
+### Environment variable (recommended)
+
+Set `REASONBLOCKS_API_KEY` in your environment. The SDK reads this variable automatically if you prefer not to pass the key in code.
+
+```bash
+export REASONBLOCKS_API_KEY=rb_live_...
+```
+
+```python
+import os
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+```
+
+### Pass directly
+
+You can also pass the key directly to the constructor:
+
+```python
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+```
+
+<Warning>
+  Do not hardcode your API key in source files you commit to version control. Use an environment variable or a secrets manager instead.
+</Warning>
+
+## Configure the client
+
+`ReasonBlocks.__init__` accepts several keyword arguments beyond `api_key`. All are optional.
+
+```python
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    base_url="https://your-rb-api-host.example.com",  # self-hosted
+    token_budget=100_000,
+    monitor_names=["loop", "confidence", "evidence", "budget", "strategy_exhaustion"],
+    fsm_thresholds={
+        "fast_threshold": 0.2,
+        "slow_threshold": 0.6,
+        "skip_threshold": 0.85,
+    },
+    model_routing={
+        "FAST": "anthropic:claude-haiku-4-5-20251001",
+        "SLOW": "anthropic:claude-sonnet-4-20250514",
+    },
+    e_traces_enabled=True,
+)
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `api_key` | `str` | — | Your ReasonBlocks API key. Required. |
+| `base_url` | `str \| None` | `None` | Override the API base URL. Use this for self-hosted deployments. |
+| `token_budget` | `int \| None` | `None` | Maximum token count tracked per run by the state manager. |
+| `monitor_names` | `list[str] \| None` | `None` | Monitor names to enable. When `None`, the server-side default suite runs. |
+| `fsm_thresholds` | `dict \| None` | `None` | Override FSM transition thresholds (`fast_threshold`, `slow_threshold`, `skip_threshold`). |
+| `model_routing` | `dict \| None` | `None` | Map FSM state names (`"FAST"`, `"SLOW"`) to model identifiers. |
+| `e_traces_enabled` | `bool` | `True` | Whether to retrieve and inject E-traces from the pattern store. |
+| `customer_id` | `str \| None` | `None` | Scope E1 pattern retrieval to a specific customer. |
+| `live_streaming_enabled` | `bool` | `True` | Stream per-step telemetry to the API as each step completes. Set to `False` for fully offline operation. |
+| `task_profile` | `str` | `"coding"` | Monitor weight profile used server-side. Built-in options: `"coding"`, `"pr_review"`, `"qa"`. |
+
+## Self-hosted deployments
+
+If you run the ReasonBlocks API server yourself, point the SDK at it using `base_url`:
+
+```python
+rb = ReasonBlocks(
+    api_key=os.environ["REASONBLOCKS_API_KEY"],
+    base_url=os.environ["REASONBLOCKS_API_URL"],
+    e_traces_enabled=True,
+)
+```
+
+You can also set the API base URL via the `REASONBLOCKS_API_URL` environment variable and read it in your code:
+
+```python
+import os
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(
+    api_key=os.environ.get("REASONBLOCKS_API_KEY", "rb-example"),
+    base_url=os.environ.get("REASONBLOCKS_API_URL"),
+    e_traces_enabled=bool(os.environ.get("REASONBLOCKS_API_URL")),
+)
+```
+
+When `REASONBLOCKS_API_URL` is not set, `base_url` is `None` and E-traces are disabled. This pattern is useful for local development and CI environments where the API server is not available.
+
+## Verify your installation
+
+Run the following to confirm the package is installed and importable:
+
+```bash
+python -c "import reasonblocks; print('ReasonBlocks installed successfully')"
+```
+
+To verify your API key works, initialize a `ReasonBlocks` instance and call `rb.middleware()` without running a full agent:
+
+```python
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+mw = rb.middleware(agent_name="test")
+print("Middleware created:", mw)
+```
+
+If no exception is raised, your installation is working correctly.

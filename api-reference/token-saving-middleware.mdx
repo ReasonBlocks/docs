@@ -1,0 +1,349 @@
+---
+title: "TokenSavingMiddleware reference"
+description: "API reference for TokenSavingMiddleware — compress old tool outputs, trigger early exit when agents loop, and track token savings with stats."
+---
+
+`TokenSavingMiddleware` is an optional, domain-agnostic middleware that reduces token consumption in long-running agent trajectories. It provides two independent mechanisms: tool-output compression and early-exit nudging. Both levers are on by default and can be toggled independently. A third, opt-in mechanism — perplexity-based word-level compression — is available when you supply a classifier.
+
+Failures inside the middleware hook are logged and swallowed. The middleware never interrupts the agent loop.
+
+<Note>
+  `TokenSavingMiddleware` stacks alongside `ReasonBlocksMiddleware` rather than being embedded inside it. You can use either independently.
+</Note>
+
+```python
+from reasonblocks import ReasonBlocks, TokenSavingMiddleware, default_suite_signals
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+agent = create_agent(
+    model=...,
+    tools=...,
+    middleware=[
+        rb.middleware(agent_name="reviewer", task="Review PR #42"),
+        TokenSavingMiddleware(signals_fn=default_suite_signals),  # always last
+    ],
+)
+```
+
+---
+
+## Constructor
+
+<ParamField path="compress_threshold_chars" type="integer" default="1800">
+  Minimum character length a `ToolMessage` body must reach before it is compressed. Messages shorter than this threshold are left unchanged.
+</ParamField>
+
+<ParamField path="head_keep_chars" type="integer" default="900">
+  Number of characters to keep from the **start** of a tool output when compressing. The head tends to contain the most actionable content.
+</ParamField>
+
+<ParamField path="tail_keep_chars" type="integer" default="700">
+  Number of characters to keep from the **end** of a tool output when compressing. The tail often contains closing context, error messages, or final values.
+</ParamField>
+
+<ParamField path="keep_recent_tool_messages" type="integer" default="2">
+  Number of the most recent `ToolMessage` objects to exempt from compression. These are the messages the agent is actively reasoning about; compressing them would degrade step quality.
+</ParamField>
+
+<ParamField path="early_exit_min_call_index" type="integer" default="40">
+  Minimum number of model calls that must have occurred before an early-exit nudge can be injected. This prevents the nudge from firing on short, healthy runs.
+</ParamField>
+
+<ParamField path="early_exit_text" type="string" default='"You appear to be stuck in a loop..."'>
+  The text injected as a `HumanMessage` when an early-exit nudge fires. The default message instructs the agent to stop investigating and submit its current best answer. Override this to match your agent's specific submission instructions.
+</ParamField>
+
+<ParamField path="signals_fn" type="callable">
+  A function `(steps: list[dict]) -> dict[str, float]` that evaluates the agent's trajectory and returns monitor scores keyed by signal name. The middleware checks the `"streak"`, `"hedge"`, and `"diversity"` keys to decide whether to fire the early-exit nudge. Pass `default_suite_signals` to use the built-in 6-monitor suite. When `None`, the early-exit lever is disabled even if `enable_early_exit=True`.
+</ParamField>
+
+<ParamField path="enable_compression" type="boolean" default="True">
+  Whether to enable head+tail tool-output compression. Set to `False` to disable compression entirely while keeping the early-exit lever active.
+</ParamField>
+
+<ParamField path="enable_early_exit" type="boolean" default="True">
+  Whether to enable the early-exit nudge. Set to `False` to disable the nudge entirely while keeping compression active.
+</ParamField>
+
+<ParamField path="enable_perplexity_compression" type="boolean" default="False">
+  Whether to enable word-level perplexity-based compression. Off by default. Requires `perplexity_classifier` to be set; if `perplexity_classifier` is `None` and this is `True`, no perplexity compression occurs.
+</ParamField>
+
+<ParamField path="perplexity_classifier" type="callable">
+  A `WordClassifier` callable — `(words: list[str]) -> list[bool]` — that returns a keep/drop decision for each word. Use `make_anthropic_classifier()` to build one backed by a small Anthropic model, or supply your own heuristic. Required when `enable_perplexity_compression=True`.
+</ParamField>
+
+<ParamField path="perplexity_recent_cutoff" type="integer" default="3">
+  Messages from fewer than this many model calls ago are considered "recent" and are excluded from perplexity compression. Keeps the agent's most active context at full fidelity.
+</ParamField>
+
+<ParamField path="perplexity_mid_cutoff" type="integer" default="10">
+  Messages from between `perplexity_recent_cutoff` and this many calls ago are in the "mid" tier and compressed at `perplexity_keep_ratio_mid`. Messages older than this are in the "old" tier.
+</ParamField>
+
+<ParamField path="perplexity_keep_ratio_mid" type="number" default="0.55">
+  Target fraction of words to keep in "mid" tier messages (3–9 model calls ago). `0.55` means the classifier aims to keep roughly 55% of words.
+</ParamField>
+
+<ParamField path="perplexity_keep_ratio_old" type="number" default="0.30">
+  Target fraction of words to keep in "old" tier messages (10+ model calls ago). More aggressive than the mid tier.
+</ParamField>
+
+<ParamField path="perplexity_window_words" type="integer" default="50">
+  The number of words per window passed to the classifier in a single call. Larger windows give the classifier more context but cost more tokens per call.
+</ParamField>
+
+---
+
+## Stats attribute
+
+Every `TokenSavingMiddleware` instance exposes a `stats` attribute of type `TokenSavingStats` that accumulates counters across all `before_model` calls.
+
+```python
+mw = TokenSavingMiddleware(signals_fn=default_suite_signals)
+# ... run the agent ...
+print(mw.stats.compressions)       # number of head+tail compressions applied
+print(mw.stats.chars_saved)        # total characters removed by head+tail compression
+print(mw.stats.early_exits)        # number of early-exit nudges injected
+print(mw.stats.perplexity_compressions)  # word-level compressions applied
+print(mw.stats.perplexity_chars_saved)   # characters removed by word-level compression
+print(mw.stats.perplexity_cache_hits)    # cached compression decisions reused
+```
+
+---
+
+## `TokenSavingStats` dataclass
+
+`TokenSavingStats` is a plain dataclass. All fields default to `0`.
+
+<ResponseField name="compressions" type="integer">
+  Running count of head+tail compressions applied to `ToolMessage` objects.
+</ResponseField>
+
+<ResponseField name="chars_saved" type="integer">
+  Total characters removed across all head+tail compressions.
+</ResponseField>
+
+<ResponseField name="early_exits" type="integer">
+  Number of times the early-exit nudge was injected into the message history.
+</ResponseField>
+
+<ResponseField name="perplexity_compressions" type="integer">
+  Number of word-level perplexity compressions applied. Only increments when `enable_perplexity_compression=True`.
+</ResponseField>
+
+<ResponseField name="perplexity_chars_saved" type="integer">
+  Total characters removed by word-level perplexity compression.
+</ResponseField>
+
+<ResponseField name="perplexity_cache_hits" type="integer">
+  Number of times a cached compression decision was reused instead of calling the classifier again. Cache keys are `(message_id, target_keep_ratio)`.
+</ResponseField>
+
+---
+
+## Standalone utilities
+
+### `compress_tool_output()`
+
+Head+tail truncates a single tool output string when it exceeds a character threshold. Returns the content unchanged if it is within the threshold. You can call this directly when you want to compress a string outside of the middleware lifecycle.
+
+```python
+from reasonblocks import compress_tool_output
+
+compressed = compress_tool_output(
+    long_output,
+    threshold_chars=1800,
+    head_chars=900,
+    tail_chars=700,
+)
+```
+
+<ParamField path="content" type="string" required>
+  The tool output string to compress.
+</ParamField>
+
+<ParamField path="threshold_chars" type="integer" default="1800">
+  Character length above which compression is applied. Strings at or below this length are returned unchanged.
+</ParamField>
+
+<ParamField path="head_chars" type="integer" default="900">
+  Characters to keep from the start of the string.
+</ParamField>
+
+<ParamField path="tail_chars" type="integer" default="700">
+  Characters to keep from the end of the string.
+</ParamField>
+
+<ResponseField name="return" type="string">
+  The original string if it's within the threshold, otherwise a head + omission notice + tail string of the form `"{head}\n\n[... N chars truncated ...]\n\n{tail}"`.
+</ResponseField>
+
+---
+
+### `make_anthropic_classifier()`
+
+Wraps an `anthropic.Anthropic`-compatible client as a `WordClassifier` for use with perplexity-based compression. The classifier asks a small Anthropic model to label each word keep or drop (LLMLingua-2 style, prompt-only — not true log-probability perplexity).
+
+Falls back to the built-in heuristic classifier on any failure (parse error, timeout, rate limit), so the middleware never breaks because of a classifier error.
+
+```python
+import anthropic
+from reasonblocks import TokenSavingMiddleware, make_anthropic_classifier
+
+client = anthropic.Anthropic()
+classifier = make_anthropic_classifier(
+    client,
+    model="claude-haiku-4-5-20251001",
+    target_keep_ratio=0.5,
+)
+
+mw = TokenSavingMiddleware(
+    enable_perplexity_compression=True,
+    perplexity_classifier=classifier,
+)
+```
+
+<ParamField path="client" type="object" required>
+  An `anthropic.Anthropic`-compatible client instance. Must expose a `client.messages.create()` method with the standard Anthropic Messages API signature.
+</ParamField>
+
+<ParamField path="model" type="string" default='"claude-haiku-4-5-20251001"'>
+  The model used to classify words. A small, fast model such as Haiku is recommended to keep classification costs low.
+</ParamField>
+
+<ParamField path="target_keep_ratio" type="number" default="0.5">
+  The fraction of words the classifier should aim to keep. This value is included in the system prompt so the model can calibrate its labeling. `0.5` means aim for roughly 50% retention.
+</ParamField>
+
+<ResponseField name="return" type="WordClassifier">
+  A `WordClassifier` callable with signature `(words: list[str]) -> list[bool]`. Pass this to `TokenSavingMiddleware(perplexity_classifier=...)`.
+</ResponseField>
+
+---
+
+### `default_suite_signals()`
+
+Runs the built-in 6-monitor suite over a list of agent steps and returns per-monitor scores as a dict. This is the default `signals_fn` for the early-exit lever.
+
+```python
+from reasonblocks import default_suite_signals, build_steps_from_messages
+
+steps = build_steps_from_messages(state["messages"])
+signals = default_suite_signals(steps)
+# {'streak': 0.0, 'hedge': 0.42, 'diversity': 0.15, ...}
+```
+
+<ParamField path="steps" type="list[dict]" required>
+  A list of step dicts in the format produced by `build_steps_from_messages()`. Each dict has keys: `step_index`, `action`, `action_input`, `thought`, `observation`, `is_error`.
+</ParamField>
+
+<ResponseField name="return" type="dict[str, float]">
+  A dict mapping monitor names to float scores. The early-exit lever checks `"streak"`, `"hedge"`, and `"diversity"` keys specifically.
+</ResponseField>
+
+---
+
+### `build_steps_from_messages()`
+
+Converts a LangChain message history into the step dict format expected by `default_suite_signals()` and the monitor suite. Pairs each `AIMessage`'s tool calls with their matching `ToolMessage` objects via `tool_call_id`.
+
+```python
+from reasonblocks import build_steps_from_messages
+
+steps = build_steps_from_messages(state["messages"])
+```
+
+<ParamField path="messages" type="list" required>
+  A list of LangChain messages (`AIMessage`, `ToolMessage`, `HumanMessage`, etc.) representing the agent's trajectory so far.
+</ParamField>
+
+<ResponseField name="return" type="list[dict]">
+  A list of step dicts, one per `AIMessage` (or one per tool call when an `AIMessage` has multiple tool calls). Each dict contains:
+
+  <Expandable title="Step dict fields">
+    <ResponseField name="step_index" type="integer">
+      Zero-based index of the step in the trajectory.
+    </ResponseField>
+    <ResponseField name="action" type="string">
+      The tool name called in this step, or an empty string if no tool was called.
+    </ResponseField>
+    <ResponseField name="action_input" type="object">
+      The arguments passed to the tool, or an empty dict.
+    </ResponseField>
+    <ResponseField name="thought" type="string">
+      The text content of the `AIMessage` (the model's reasoning).
+    </ResponseField>
+    <ResponseField name="observation" type="string">
+      The content of the matched `ToolMessage`, or an empty string if no observation was found.
+    </ResponseField>
+    <ResponseField name="is_error" type="boolean">
+      `True` if the `ToolMessage` has `status="error"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Full example
+
+<CodeGroup>
+
+```python Basic compression + early exit
+from reasonblocks import (
+    ReasonBlocks,
+    TokenSavingMiddleware,
+    default_suite_signals,
+)
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+mw = TokenSavingMiddleware(
+    compress_threshold_chars=1800,
+    keep_recent_tool_messages=2,
+    early_exit_min_call_index=40,
+    signals_fn=default_suite_signals,
+)
+
+agent = create_agent(
+    model=...,
+    tools=...,
+    middleware=[rb.middleware(agent_name="reviewer", task="Review PR #5"), mw],
+)
+
+result = agent.invoke({"messages": [HumanMessage(content="Review PR #5")]})
+
+print(f"Compressions: {mw.stats.compressions}")
+print(f"Chars saved:  {mw.stats.chars_saved}")
+print(f"Early exits:  {mw.stats.early_exits}")
+```
+
+```python With perplexity compression
+import anthropic
+from reasonblocks import (
+    TokenSavingMiddleware,
+    make_anthropic_classifier,
+    default_suite_signals,
+)
+
+classifier = make_anthropic_classifier(
+    anthropic.Anthropic(),
+    model="claude-haiku-4-5-20251001",
+    target_keep_ratio=0.5,
+)
+
+mw = TokenSavingMiddleware(
+    signals_fn=default_suite_signals,
+    enable_perplexity_compression=True,
+    perplexity_classifier=classifier,
+    perplexity_recent_cutoff=3,
+    perplexity_mid_cutoff=10,
+    perplexity_keep_ratio_mid=0.55,
+    perplexity_keep_ratio_old=0.30,
+)
+
+agent = create_agent(model=..., tools=..., middleware=[mw])
+```
+
+</CodeGroup>

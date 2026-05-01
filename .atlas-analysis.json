@@ -1,0 +1,130 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "ReasonBlocks",
+  "projectDescription": "Python SDK that adds FSM-based step scoring, E-trace steering injection, health monitoring, and intelligent model routing to LangChain and OpenAI Agents applications.",
+  "theme": "luma",
+  "primaryColor": "#7c7c7c",
+  "lightColor": "#080808",
+  "darkColor": "#a4a4a4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/how-it-works",
+              "concepts/fsm-states",
+              "concepts/e-traces",
+              "concepts/monitors"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/langchain",
+              "guides/openai-agents",
+              "guides/model-routing",
+              "guides/codebase-memory",
+              "guides/token-saving"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/reasonblocks-config",
+              "configuration/monitor-profiles",
+              "configuration/advanced"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting/faq",
+              "troubleshooting/common-issues"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "SDK Classes",
+            "pages": [
+              "api-reference/reasonblocks",
+              "api-reference/codebase-memory",
+              "api-reference/import-graph",
+              "api-reference/token-saving-middleware"
+            ]
+          },
+          {
+            "group": "Types",
+            "pages": [
+              "api-reference/types/fsm-state",
+              "api-reference/types/step-record",
+              "api-reference/types/e-trace"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "api-reference/integrations/langchain-tools",
+              "api-reference/integrations/claude-tools",
+              "api-reference/integrations/openai-tools"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "FSM-based difficulty scoring that routes agents between fast/slow/skip modes",
+    "E-trace injection system (E1 instance-level, E2 pattern-level, E3 universal) for steering agents",
+    "Server-side trajectory monitors for detecting loops, hedging, edit-revert thrashing, and test-repeat failures",
+    "Intelligent model routing — swap to a cheaper or stronger model based on agent difficulty state",
+    "CodebaseMemory for persistent per-repo findings with semantic recall across agent runs",
+    "ImportGraph with blast-radius queries to track downstream impact of file changes",
+    "TokenSavingMiddleware for compressing stale tool outputs and nudging stuck agents to exit early",
+    "Framework integrations for LangChain, Anthropic Messages API, Claude Agent SDK, and OpenAI Agents"
+  ],
+  "publicApiSurface": [
+    "ReasonBlocks(api_key, *, base_url, token_budget, monitor_names, fsm_thresholds, model_routing, e_traces_enabled, customer_id, live_streaming_enabled, task_profile)",
+    "ReasonBlocks.middleware(*, run_id, agent_name, task, framework, model, codebase_id, org_id, project_id, metadata) -> ReasonBlocksMiddleware",
+    "ReasonBlocks.openai_hooks(*, run_id, agent_name, task, ...) -> ReasonBlocksHooks",
+    "ReasonBlocksConfig (dataclass with all capability toggles and tunable parameters)",
+    "build_middleware(config, api, *, score_fn, fsm, state_manager, model_routing, run_id, run_metadata) -> list",
+    "CodebaseMemory(codebase_id, *, api_key, base_url, timeout)",
+    "CodebaseMemory.store(content, *, file_path, finding_type, metadata) -> Optional[str]",
+    "CodebaseMemory.recall(query, *, top_k, score_threshold) -> list[dict]",
+    "CodebaseMemory.invalidate(file_paths) -> int",
+    "CodebaseMemory.clear() -> bool",
+    "CodebaseMemory.format_recall(query, *, top_k, score_threshold, max_len) -> str",
+    "ImportGraph.build_from_files(files: dict[str, str]) -> ImportGraph",
+    "ImportGraph.blast_radius(changed_files, *, depth) -> set[str]",
+    "ImportGraph.importers(file_path) -> list[str]",
+    "ImportGraph.dependencies(file_path) -> list[str]",
+    "ImportGraph.format_impact(file_path) -> str",
+    "TokenSavingMiddleware(*, compress_threshold_chars, keep_recent_tool_messages, enable_compression, enable_early_exit, signals_fn, ...)",
+    "compress_tool_output(content, *, threshold_chars, head_chars, tail_chars) -> str",
+    "make_anthropic_classifier(client, *, model, target_keep_ratio) -> WordClassifier",
+    "default_suite_signals(steps) -> dict[str, float]",
+    "evaluate_all(steps, *, weights, fire_threshold) -> dict",
+    "make_langchain_tools(memory, graph, *, recall_top_k, recall_threshold, enable_recall, enable_store, enable_impact) -> list",
+    "make_claude_tools(memory, graph, *, recall_top_k, recall_threshold, enable_store, enable_impact) -> tuple[list, Callable]",
+    "make_openai_tools(memory, graph, *, recall_top_k, recall_threshold, enable_recall, enable_store, enable_impact) -> list",
+    "FSMState (enum: INIT, FAST, NORMAL, SLOW, SKIP, END)",
+    "ETrace (dataclass: tier, similarity, pattern_id, fields, failure_type, model_family)",
+    "StepRecord (dataclass: step_index, thought, action, action_input, observation, difficulty, state, tokens_used)",
+    "TraceState (dataclass: trace_id, steps, current_state, difficulty_history, total_tokens, token_budget)"
+  ]
+}

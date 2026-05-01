@@ -1,0 +1,61 @@
+---
+title: "How ReasonBlocks works"
+description: "An overview of the middleware pipeline: how ReasonBlocks scores each agent step, runs health monitors, injects steering guidance, and routes the model call."
+---
+
+ReasonBlocks attaches to your agent as a LangChain middleware. On every step it evaluates the agent's current reasoning, decides whether intervention is needed, assembles any guidance into the system message, and then lets the model call proceed. From your agent's perspective nothing changes — it still sees one system message and produces one response. ReasonBlocks does its work invisibly in the space between those two events.
+
+## The two hook points
+
+ReasonBlocks operates through two hooks that the middleware framework fires on every agent step.
+
+**`before_model`** runs before the LLM call. It scores the agent's latest thought, advances the difficulty FSM, runs health monitors, and queues any E-trace injections that are warranted.
+
+**`wrap_model_call`** runs immediately before and after the LLM call. It applies model routing (swapping in a stronger or lighter model based on FSM state), renders queued injections into the system message, issues the call, and records token usage and latency.
+
+## Step-by-step lifecycle
+
+<Steps>
+  <Step title="First call — E3 only">
+    On the very first agent step there is no prior thought to score, so ReasonBlocks skips difficulty scoring and the FSM stays at `INIT`. Only **E3 injections** (universal standing rules) are retrieved and appended to the system message. This primes the agent with baseline guidance before it has generated any output.
+  </Step>
+
+  <Step title="Score the thought">
+    From step two onward, `before_model` extracts the last assistant message and calls `score_step` to produce a difficulty score between 0 and 1. The score combines hedging density, response length, error language, and entity density into a single float.
+  </Step>
+
+  <Step title="Advance the FSM">
+    The difficulty score is fed to the difficulty FSM alongside the recent difficulty history. The FSM transitions between `NORMAL`, `FAST`, `SLOW`, and `SKIP` states based on whether scores are consistently low, high, or extreme. The resulting state controls everything that follows.
+  </Step>
+
+  <Step title="Run health monitors">
+    Six monitors evaluate the accumulated step trace for signs of trouble — repeated actions, edit thrashing, stalled test loops, collapsed tool exploration, and rising hedging language. Each monitor produces a score in [0, 1]; any monitor at or above **0.6** is considered fired.
+  </Step>
+
+  <Step title="Gate and queue injections">
+    - **E1** (instance-level guidance) is only queried when at least one monitor has fired or the composite monitor score exceeds 0.15. This prevents unnecessary pattern-store lookups on healthy runs.
+    - **E2** (pattern-level guidance) retrieves up to two patterns keyed on the current failure mode classification, when available.
+    - **E3** (universal rules) fires only once per run, on the first call.
+    - **FAST state** skips the entire E-trace pipeline — no pattern-store lookups, no embeddings — because the agent is making consistent progress and intervention would only add latency.
+  </Step>
+
+  <Step title="Route the model">
+    In `wrap_model_call`, the FSM state is checked against your `model_routing` configuration. If the current state maps to a different model (for example `SLOW` → a stronger model), the request is transparently overridden before the call is issued.
+  </Step>
+
+  <Step title="Inject into the system message">
+    Queued injections are rendered into a single text block and appended to the system message as a `[REASONBLOCKS]` section. The base system prompt receives an Anthropic `cache_control` marker so it hits the prompt cache on every step; the injected block rides uncached so its varying content never busts that cache.
+  </Step>
+
+  <Step title="Call the model and record telemetry">
+    The model call proceeds with the updated request. After the response arrives, ReasonBlocks records token usage, latency, tool calls, and the FSM state for the step. If live streaming is enabled, a step event is emitted to the ReasonBlocks API so the dashboard reflects the run in real time.
+  </Step>
+</Steps>
+
+## What the agent sees
+
+Your agent's message history is never modified. Injections appear only as an additional block inside the system message, formatted as `[REASONBLOCKS]\n<guidance>`. This means the agent's conversation turns remain clean and the model does not treat steering guidance as a prior assistant or user message.
+
+<Note>
+  The `[REASONBLOCKS]` block is rebuilt fresh on every step. Only injections that are relevant to the current step are included — there is no cumulative accumulation of guidance across turns.
+</Note>

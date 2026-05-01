@@ -1,0 +1,222 @@
+---
+title: "Use ReasonBlocks with OpenAI Agents"
+description: "Integrate ReasonBlocks telemetry and codebase memory tools into OpenAI Agents SDK applications using hooks and the make_openai_tools factory."
+---
+
+ReasonBlocks integrates with the OpenAI Agents SDK through `RunHooks` — a callback object you pass to `Runner.run`. The `rb.openai_hooks()` method builds a hooks instance that fires the same `run_start`, `step`, and `run_finish` telemetry events as the LangChain middleware, so your dashboard runs look identical regardless of which framework you use.
+
+<Steps>
+  <Step title="Install dependencies">
+    Install ReasonBlocks and the OpenAI Agents SDK.
+
+    ```bash
+    pip install reasonblocks openai-agents
+    ```
+  </Step>
+
+  <Step title="Initialize ReasonBlocks">
+    Create a `ReasonBlocks` instance with your API key. This is the same initialization you use for any other framework integration.
+
+    ```python
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(api_key="rb_live_...")
+    ```
+  </Step>
+
+  <Step title="Create hooks and run your agent">
+    Call `rb.openai_hooks()` to get a hooks object, then pass it to `Runner.run` via the `hooks=` keyword argument.
+
+    ```python
+    import asyncio
+    from agents import Agent, Runner
+
+    hooks = rb.openai_hooks(
+        run_id="my-run-1",
+        agent_name="reviewer",
+        task="review PR #42",
+    )
+
+    agent = Agent(
+        name="reviewer",
+        instructions="You are a senior code reviewer. Review the PR and leave precise, actionable comments.",
+        tools=[...],
+    )
+
+    result = asyncio.run(Runner.run(agent, input="Review PR #42", hooks=hooks))
+    ```
+
+    For synchronous use, call `Runner.run_sync` instead:
+
+    ```python
+    with hooks:
+        result = Runner.run_sync(agent, input="Review PR #42", hooks=hooks)
+    ```
+  </Step>
+
+  <Step title="Tag runs for the dashboard">
+    Pass the same identifying metadata you would pass to `rb.middleware()`. All parameters are optional.
+
+    ```python
+    hooks = rb.openai_hooks(
+        run_id="my-run-1",                          # auto-generated UUID if omitted
+        agent_name="pr-reviewer",                   # free-form filter key
+        task="review PR #42",                       # shown on the run row
+        framework="openai-agents",                  # default value
+        model="gpt-4o",                             # for display only
+        codebase_id="myrepo@sha:abc123",            # scopes E1 retrieval
+        org_id="6d3f...",                           # UUID; "default" if omitted
+        project_id="a91b...",                       # UUID; "default" if omitted
+    )
+    ```
+
+    Extra tags go in `metadata`:
+
+    ```python
+    hooks = rb.openai_hooks(
+        agent_name="pr-reviewer",
+        metadata={"pr_number": 42, "base_branch": "main"},
+    )
+    ```
+  </Step>
+
+  <Step title="Track failures with the context manager">
+    The hooks object is both a sync and async context manager. Use it to ensure the run-finish telemetry event is flushed even when an exception escapes.
+
+    <Tabs>
+      <Tab title="Async">
+        ```python
+        async def run_agent(task: str):
+            hooks = rb.openai_hooks(agent_name="reviewer", task=task)
+
+            async with hooks:
+                result = await Runner.run(agent, input=task, hooks=hooks)
+
+            return result
+        ```
+      </Tab>
+      <Tab title="Sync">
+        ```python
+        def run_agent(task: str):
+            hooks = rb.openai_hooks(agent_name="reviewer", task=task)
+
+            with hooks:
+                result = Runner.run_sync(agent, input=task, hooks=hooks)
+
+            return result
+        ```
+      </Tab>
+    </Tabs>
+
+    When the agent completes but the outcome is still a failure, call `hooks.mark_failure` before the context manager exits:
+
+    ```python
+    async with hooks:
+        result = await Runner.run(agent, input=task, hooks=hooks)
+        if not outcome_is_valid(result):
+            hooks.mark_failure(reason="invalid_output")
+    ```
+
+    For unhandled exceptions that propagate out of the `with` block, the context manager records `failure: <ExceptionType>` automatically — you don't need to call `mark_failure`.
+  </Step>
+</Steps>
+
+## Add CodebaseMemory tools
+
+`make_openai_tools` wraps a `CodebaseMemory` and optional `ImportGraph` into `function_tool`-decorated callables ready for `Agent(tools=[...])`.
+
+```python
+from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks.integrations.openai_agents import make_openai_tools
+
+memory = CodebaseMemory(
+    codebase_id="myrepo@sha:abc123",
+    api_key="rb_live_...",
+)
+
+rb_tools = make_openai_tools(memory)
+
+agent = Agent(
+    name="reviewer",
+    instructions="Review the PR thoroughly. Call recall_findings before reading files.",
+    tools=[*rb_tools, *your_tools],
+)
+```
+
+This adds up to three tools to the agent:
+
+- **`recall_findings`** — semantic search over prior findings for the codebase
+- **`store_finding`** — persist a new finding for future runs
+- **`impact_analysis`** — blast-radius query via `ImportGraph` (only added when a graph is provided)
+
+To include `impact_analysis`, pass a built `ImportGraph`:
+
+```python
+from reasonblocks.import_graph import ImportGraph
+
+graph = ImportGraph()
+graph.build_from_files({path: source for path, source in py_files.items()})
+
+rb_tools = make_openai_tools(memory, graph)
+```
+
+<Note>
+  `ImportGraph.build_from_files` requires `networkx`. Install it with `pip install networkx`.
+</Note>
+
+Disable individual tools for read-only agents:
+
+```python
+rb_tools = make_openai_tools(memory, enable_store=False)
+```
+
+## Complete example
+
+```python
+import asyncio
+import os
+from agents import Agent, Runner
+from reasonblocks import ReasonBlocks
+from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks.integrations.openai_agents import make_openai_tools
+
+rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+
+memory = CodebaseMemory(
+    codebase_id="my-org/my-repo",
+    api_key=os.environ["REASONBLOCKS_API_KEY"],
+)
+rb_tools = make_openai_tools(memory)
+
+agent = Agent(
+    name="pr-reviewer",
+    instructions=(
+        "You are a senior code reviewer. "
+        "Call recall_findings before reading any file. "
+        "After reviewing, store key findings for future runs."
+    ),
+    tools=[*rb_tools],
+)
+
+async def main():
+    hooks = rb.openai_hooks(
+        agent_name="pr-reviewer",
+        task="review PR #42",
+        codebase_id="my-org/my-repo",
+    )
+
+    async with hooks:
+        result = await Runner.run(
+            agent,
+            input="Review the changes in PR #42 and flag any regressions.",
+            hooks=hooks,
+        )
+
+    print(result.final_output)
+
+asyncio.run(main())
+```
+
+<Warning>
+  Each `hooks` object is single-use. Create a new one for each agent run by calling `rb.openai_hooks(...)` again.
+</Warning>

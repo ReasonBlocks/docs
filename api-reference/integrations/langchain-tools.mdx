@@ -1,0 +1,163 @@
+---
+title: "LangChain tool factories for ReasonBlocks"
+description: "make_langchain_tools() returns LangChain tools for CodebaseMemory recall, storing findings, and impact analysis — pass the list directly to create_agent."
+---
+
+`make_langchain_tools` wires a `CodebaseMemory` instance and an optional `ImportGraph` to a list of LangChain `@tool`-decorated functions. Pass the returned list directly to `create_agent` or a LangGraph node alongside your own tools. The tools share the same `memory` and `graph` objects you provide, so findings stored during one step are immediately available on the next recall.
+
+```python
+from reasonblocks.integrations import make_langchain_tools
+```
+
+## Installation
+
+The LangChain integration requires `langchain-core`. Install it alongside the ReasonBlocks SDK:
+
+```bash
+pip install reasonblocks langchain-core
+```
+
+## make_langchain_tools
+
+```python
+make_langchain_tools(
+    memory: CodebaseMemory | None = None,
+    graph: ImportGraph | None = None,
+    *,
+    recall_top_k: int = 5,
+    recall_threshold: float = 0.25,
+    enable_recall: bool = True,
+    enable_store: bool = True,
+    enable_impact: bool = True,
+) -> list
+```
+
+Returns a list of LangChain `Tool` objects. The list length depends on which flags are enabled and which arguments are provided: up to three tools (`recall_findings`, `store_finding`, `impact_analysis`).
+
+### Parameters
+
+<ParamField path="memory" type="CodebaseMemory | None" default="None">
+  The `CodebaseMemory` instance the tools read from and write to. Bind one instance per agent run. When `None`, both `recall_findings` and `store_finding` are omitted from the returned list regardless of `enable_recall` and `enable_store`.
+</ParamField>
+
+<ParamField path="graph" type="ImportGraph | None" default="None">
+  Optional `ImportGraph` for the repository. When provided and `enable_impact` is `True`, an `impact_analysis` tool is added to the list. Pass `None` to omit the tool.
+</ParamField>
+
+<ParamField path="recall_top_k" type="int" default="5">
+  Maximum number of findings to return from a single `recall_findings` call. Increasing this value returns more context but uses more tokens.
+</ParamField>
+
+<ParamField path="recall_threshold" type="float" default="0.25">
+  Minimum similarity score (0–1) a finding must reach to be included in recall results. Lower values return more results with potentially lower relevance; higher values return fewer, higher-confidence results.
+</ParamField>
+
+<ParamField path="enable_recall" type="bool" default="true">
+  Include the `recall_findings` tool. Set to `False` to produce a write-only or impact-only tool set.
+</ParamField>
+
+<ParamField path="enable_store" type="bool" default="true">
+  Include the `store_finding` tool. Set to `False` for read-only scenarios where the agent should not persist new observations.
+</ParamField>
+
+<ParamField path="enable_impact" type="bool" default="true">
+  Include the `impact_analysis` tool when a `graph` is provided. Set to `False` to suppress it even when `graph` is not `None`.
+</ParamField>
+
+### Returns
+
+<ResponseField name="tools" type="list[Tool]">
+  A list of LangChain `Tool` objects. Safe to concatenate with your own tool list: `tools=[*rb_tools, *your_tools]`.
+</ResponseField>
+
+## Tools
+
+### `recall_findings(query)`
+
+Searches `CodebaseMemory` for findings relevant to `query`. The agent should call this **before** reading a file — if findings already exist, it can skip the file read entirely.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `query` | `str` | Natural-language description of what you are looking for |
+
+Returns a formatted string containing matching findings, or a message indicating nothing was found.
+
+### `store_finding(content, file_path, finding_type)`
+
+Persists a new finding to `CodebaseMemory` so future agent runs can recall it. Store small, self-contained facts rather than long paragraphs.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `content` | `str` | — | The finding text (under 8 000 characters) |
+| `file_path` | `str` | `""` | Repo-relative path the finding is about, if applicable |
+| `finding_type` | `str` | `"note"` | Short tag: `bug`, `behavior`, `pattern`, or `note` |
+
+Returns `"stored (id=<fid>)"` on success or `"store failed"` on error.
+
+### `impact_analysis(file_path)`
+
+Queries the `ImportGraph` to return the dependents (files that import this file) and dependencies (files this file imports). Use it to judge the blast radius of a proposed change.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `file_path` | `str` | Repo-relative path, e.g. `"pydantic/main.py"` |
+
+Returns a formatted string describing the file's dependents and dependencies.
+
+<Note>
+  `impact_analysis` is only present in the returned list when you pass a non-`None` `graph` **and** `enable_impact=True`. If you conditionally build your tool list, check `len(rb_tools)` rather than assuming a fixed index.
+</Note>
+
+## Complete example
+
+<CodeGroup>
+
+```python LangChain agent
+from reasonblocks import ReasonBlocks
+from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks.import_graph import ImportGraph
+from reasonblocks.integrations import make_langchain_tools
+from langchain.agents import create_openai_tools_agent, AgentExecutor
+from langchain_openai import ChatOpenAI
+
+import pathlib
+
+rb     = ReasonBlocks(api_key="rb_live_...")
+memory = CodebaseMemory(codebase_id="my-repo")
+graph  = ImportGraph().build_from_files(
+    {str(p): p.read_text() for p in pathlib.Path("myrepo").rglob("*.py")}
+)
+
+rb_tools = make_langchain_tools(
+    memory,
+    graph,
+    recall_top_k=8,
+    recall_threshold=0.3,
+)
+
+llm   = ChatOpenAI(model="gpt-4o")
+agent = create_openai_tools_agent(llm, rb_tools + your_tools, prompt)
+executor = AgentExecutor(agent=agent, tools=rb_tools + your_tools)
+
+with rb.middleware(run_id="run-1", agent_name="reviewer", task="review PR #42") as mw:
+    result = executor.invoke({"input": "Review the changes in PR #42"})
+```
+
+```python Read-only (no store)
+rb_tools = make_langchain_tools(
+    memory,
+    graph,
+    enable_store=False,   # agent cannot persist findings
+)
+```
+
+```python Without import graph
+rb_tools = make_langchain_tools(memory)
+# impact_analysis is not included — graph is None
+```
+
+</CodeGroup>
+
+<Tip>
+  Call `make_langchain_tools` once per agent run, not once per application start. This ensures `memory` is bound to the correct run-scoped `CodebaseMemory` instance.
+</Tip>

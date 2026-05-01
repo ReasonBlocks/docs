@@ -1,0 +1,233 @@
+---
+title: "Advanced configuration options"
+description: "Configure FSM thresholds, model routing, live streaming, customer scoping, stage timing instrumentation, and custom run metadata for production deployments."
+---
+
+This page covers the lower-level knobs that most integrations do not need to touch on day one, but that become important once you are tuning ReasonBlocks for a specific workload or deploying to production.
+
+## Full `ReasonBlocks` constructor signature
+
+All parameters except `api_key` are keyword-only:
+
+```python
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    base_url=None,                  # default: ReasonBlocks hosted API
+    token_budget=None,              # default: no run-level budget cap
+    monitor_names=None,             # default: full monitor suite
+    fsm_thresholds=None,            # default: SDK defaults (see table below)
+    model_routing=None,             # default: no model switching
+    e_traces_enabled=True,
+    customer_id=None,
+    live_streaming_enabled=True,
+    task_profile="coding",
+)
+```
+
+---
+
+## FSM threshold tuning
+
+The difficulty state machine classifies each step into one of four states — `FAST`, `NORMAL`, `SLOW`, or `SKIP` — based on a difficulty score between `0.0` and `1.0`. You can adjust every threshold and window by passing a `fsm_thresholds` dict to the `ReasonBlocks` constructor.
+
+### Default thresholds
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `fast_threshold` | `0.2` | Score below which a step is considered "easy" |
+| `slow_threshold` | `0.6` | Score above which a step is considered "hard" |
+| `skip_threshold` | `0.85` | Score above which sustained hardness escalates to SKIP |
+| `hysteresis_margin` | `0.1` | Buffer to prevent thrashing between adjacent states |
+| `fast_window` | `6` | Consecutive steps below `fast_threshold` needed to enter FAST |
+| `slow_window` | `5` | Consecutive steps above `slow_threshold` needed to enter SLOW |
+| `skip_window` | `35` | Consecutive steps above `skip_threshold` needed to enter SKIP |
+
+### Tuning for your workload
+
+Pass any subset of the defaults you want to override as a dict:
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    fsm_thresholds={
+        "fast_threshold": 0.15,   # enter FAST only on very easy steps
+        "slow_threshold": 0.55,   # enter SLOW more readily
+        "fast_window": 4,         # react to easy runs faster
+        "slow_window": 3,         # react to struggling runs faster
+    },
+)
+```
+
+<Tip>
+  If your agent never enters FAST mode (or enters it too aggressively), `fast_threshold` and `fast_window` are the first values to adjust. If you see too many unnecessary steering injections, raising `slow_threshold` slightly reduces how often the FSM classifies a step as hard.
+</Tip>
+
+**How hysteresis works:** Once the FSM enters FAST, it stays there until a single step scores above `fast_threshold + hysteresis_margin` (default `0.2 + 0.1 = 0.3`). This prevents one slightly-harder step from bouncing the agent back to NORMAL immediately. The same principle applies in SLOW: a single easier step must score below `slow_threshold - hysteresis_margin` (default `0.6 - 0.1 = 0.5`) to exit SLOW.
+
+---
+
+## Model routing
+
+`model_routing` maps FSM state names to model identifiers. On each step, the middleware checks the current state and swaps the model in the `ModelRequest` before calling the LLM. This lets you use a cheaper model for easy steps and a more capable model when the agent is struggling.
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    model_routing={
+        "FAST":   "anthropic:claude-haiku-4-5-20251001",   # cheap on easy steps
+        "NORMAL": "anthropic:claude-sonnet-4-20250514",    # default capability
+        "SLOW":   "anthropic:claude-opus-4-5",             # full power when stuck
+        "SKIP":   "anthropic:claude-opus-4-5",             # same for critical runs
+    },
+)
+```
+
+Model identifiers must be in LangChain's `init_chat_model` format (`provider:model-name`). You do not need to provide a mapping for every state — any state without an explicit mapping uses whatever model the agent was originally configured with.
+
+<Note>
+  Model routing is applied in `wrap_model_call`, after `before_model` has already scored the step and computed the new FSM state. The routing decision uses the state from the *current* step, not the previous one.
+</Note>
+
+---
+
+## Live streaming
+
+Live streaming emits per-step telemetry events to the ReasonBlocks API as each step completes, so the dashboard shows runs in progress in real time. It is enabled by default.
+
+Disable it for offline mode or when running in environments without outbound network access:
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    live_streaming_enabled=False,
+)
+```
+
+When `live_streaming_enabled=False`:
+- No telemetry background worker is started
+- The dashboard will not show the run as in-progress
+- The run row is never created in the dashboard unless you call `flush_session()` with a different mechanism
+- All local behavior (FSM, scoring, injection) is unaffected — only the telemetry pipeline is skipped
+
+<Warning>
+  With live streaming disabled, the dashboard will not show a run row for the session at all. If you need offline agents to appear in the dashboard after the fact, use a self-hosted ReasonBlocks API deployment and flush traces via `flush_session()` once connectivity is available.
+</Warning>
+
+---
+
+## Customer scoping for E1 retrieval
+
+`customer_id` narrows E1 retrieval to patterns distilled from a specific customer's trace history. Pass it to the `ReasonBlocks` constructor or to `ReasonBlocksConfig`:
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    customer_id="acme-corp",   # E1 searches within this customer's pattern scope
+)
+```
+
+When `customer_id` is `None`, E1 retrieves from the global pattern store shared across all customers. Setting a `customer_id` is recommended for any production deployment where different customers have meaningfully different task patterns.
+
+---
+
+## Run-level token budget
+
+`token_budget` sets a ceiling on the total tokens tracked per run before flagging the run as over-budget. The FSM transitions to SKIP when the budget is exhausted:
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    token_budget=200_000,   # enter SKIP if the run exceeds 200k tokens
+)
+```
+
+Omit `token_budget` (or pass `None`) to run without a token cap.
+
+---
+
+## Stage timing instrumentation
+
+`ReasonBlocksMiddleware` can record per-stage latencies in milliseconds, broken down into six buckets. This is useful for diagnosing where middleware overhead is coming from on long-running benchmark runs.
+
+```python
+mw = rb.middleware(run_id="my-run")
+mw.enable_stage_timings()   # must be called before the agent runs
+
+result = agent.invoke({"messages": [HumanMessage(content="...")]})
+
+timings = mw.get_stage_timings()
+# {
+#   "monitor_scoring": [12.3, 9.8, 11.1, ...],
+#   "e1_retrieval":    [45.2, 38.7, ...],
+#   "e2_retrieval":    [22.1, 19.4, ...],
+#   "e3_retrieval":    [5.0],
+#   "format_routing":  [0.3, 0.2, ...],
+#   "system_injection": [0.1, 0.1, ...],
+# }
+```
+
+The six buckets are:
+
+| Bucket | What is measured |
+|---|---|
+| `monitor_scoring` | Time to call the monitor evaluation endpoint and receive scored results |
+| `e1_retrieval` | Time to query for customer-scoped patterns (vector search) |
+| `e2_retrieval` | Time to query the commons store for pattern matches |
+| `e3_retrieval` | Time to fetch universal standing rules (only on step 0) |
+| `format_routing` | Time to render pending injections into the final string |
+| `system_injection` | Time to rewrite the system message with the injected text |
+
+Each list contains one float per step where that stage ran. Steps where a stage was skipped (for example, E1 is skipped when the FSM is in FAST state) produce no entry in the corresponding list.
+
+You can also retrieve raw call overhead and LLM latency:
+
+```python
+overhead_ms = mw.get_call_overhead_ms()   # SDK overhead per step
+llm_ms      = mw.get_call_llm_ms()        # LLM call duration per step
+```
+
+---
+
+## Custom run metadata
+
+The `metadata` parameter on `rb.middleware()` attaches a free-form dict to the run row in the dashboard. Use it for any identifying tags that do not fit the named fields (`agent_name`, `task`, `model`, `codebase_id`):
+
+```python
+mw = rb.middleware(
+    run_id="pr-review-42",
+    agent_name="reviewer",
+    task="review PR #42",
+    model="anthropic:claude-sonnet-4-20250514",
+    org_id="my-org",
+    project_id="infra-review",
+    metadata={
+        "pr_number": 42,
+        "repo": "acme/backend",
+        "experiment": "sonnet-v-opus-routing",
+        "ab_group": "B",
+    },
+)
+```
+
+The `metadata` dict merges with the named run fields on the run record. Keys that collide with named fields are overwritten by the named field values. The dict is stored as JSON and is searchable in the dashboard.
+
+<Note>
+  `org_id` and `project_id` default to `"default"`. When your `api_key` is a per-customer `rb_live_*` key bound to a specific org, the ReasonBlocks API overrides these with the key's authoritative scope — most callers can leave them at the defaults.
+</Note>
+
+---
+
+## Self-hosted deployments
+
+To point the SDK at a self-hosted ReasonBlocks API deployment, pass `base_url` to the `ReasonBlocks` constructor:
+
+```python
+rb = ReasonBlocks(
+    api_key="rb_live_...",
+    base_url="https://reasonblocks-api.internal.acme.com",
+)
+```
+
+`base_url` is forwarded to all internal API clients — for E-trace retrieval, monitor evaluation, and live telemetry. All other behavior is identical.

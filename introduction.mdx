@@ -1,0 +1,62 @@
+---
+title: "What is ReasonBlocks?"
+description: "ReasonBlocks is a Python SDK that adds step scoring, E-trace injection, and health monitoring to LangChain and OpenAI Agents apps without changing your agent code."
+---
+
+ReasonBlocks is middleware for AI agents. It sits between your agent loop and the LLM, scoring each reasoning step, detecting when the agent is struggling, and injecting targeted guidance from a live pattern store — all without changing your agent's logic or message history.
+
+## What it does
+
+On every step of the agent loop, ReasonBlocks:
+
+1. **Scores** the agent's last reasoning step for difficulty using signals like hedging language, error density, and entity count
+2. **Classifies** the run into a state — `FAST`, `NORMAL`, `SLOW`, or `SKIP` — using a finite state machine with hysteresis
+3. **Monitors** for unhealthy patterns: infinite loops, repeated test failures, edit-revert thrashing, and more
+4. **Injects** targeted E-trace guidance from a pattern store into the system prompt before the next model call
+5. **Routes** the model call to a cheaper or more capable model based on the current FSM state
+
+The result is an agent that catches its own stuck patterns earlier, receives relevant guidance at exactly the right time, and costs less to run by routing easy steps to faster models.
+
+## Who it's for
+
+ReasonBlocks is designed for teams building production AI agents on LangChain 1.0 or the OpenAI Agents SDK. If your agents suffer from loops, excessive tool call counts, or inconsistent task completion, ReasonBlocks gives you the observability and steering infrastructure to fix that without rewriting your agent logic.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="E-Trace injection" icon="brain" href="/concepts/e-traces">
+    Pull instance-level, pattern-level, and universal guidance from a live pattern store and inject it into the system prompt at the right moment
+  </Card>
+  <Card title="FSM state machine" icon="diagram-project" href="/concepts/fsm-states">
+    Track agent difficulty across FAST, NORMAL, SLOW, and SKIP states with configurable thresholds and hysteresis
+  </Card>
+  <Card title="Health monitors" icon="heart-pulse" href="/concepts/monitors">
+    Detect loops, hedging, edit-revert thrashing, and test-repeat failures automatically using a configurable monitor suite
+  </Card>
+  <Card title="Model routing" icon="shuffle" href="/guides/model-routing">
+    Route to a fast model on easy steps and a more powerful model when the agent is struggling — with zero changes to your agent code
+  </Card>
+  <Card title="Codebase memory" icon="database" href="/guides/codebase-memory">
+    Persist and recall per-repo findings semantically across agent runs using `CodebaseMemory`
+  </Card>
+  <Card title="Token saving" icon="scissors" href="/guides/token-saving">
+    Compress stale tool outputs and nudge stuck agents toward an early exit to reduce context window usage
+  </Card>
+</CardGroup>
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Add ReasonBlocks to your agent in under five minutes
+  </Card>
+  <Card title="Installation" icon="package" href="/installation">
+    Install the SDK and configure your API key
+  </Card>
+  <Card title="How it works" icon="gear" href="/concepts/how-it-works">
+    Understand FSM states, E-traces, and the monitoring pipeline
+  </Card>
+  <Card title="LangChain guide" icon="link" href="/guides/langchain">
+    Step-by-step integration guide for LangChain and LangGraph agents
+  </Card>
+</CardGroup>

@@ -1,0 +1,167 @@
+---
+title: "Get started with ReasonBlocks in five minutes"
+description: "Install the SDK, initialize ReasonBlocks, and add middleware to your LangChain agent. Your first instrumented run takes about five minutes to set up."
+---
+
+This guide walks you through adding ReasonBlocks to an existing LangChain agent. By the end, your agent will have step scoring, E-trace injection, and health monitoring active on every run, and each run will appear in the ReasonBlocks dashboard.
+
+<Steps>
+  <Step title="Install the SDK">
+    Install ReasonBlocks from PyPI. It requires Python 3.10 or later.
+
+    ```bash
+    pip install reasonblocks
+    ```
+
+    ReasonBlocks depends on `langchain>=1.0` and `httpx>=0.27`. These are installed automatically.
+  </Step>
+
+  <Step title="Get your API key">
+    Log in to the [ReasonBlocks dashboard](https://app.reasonblocks.com) and copy your API key from the **Quickstart** page. It starts with `rb_live_`.
+
+    Set it as an environment variable so you don't hardcode it in your source:
+
+    ```bash
+    export REASONBLOCKS_API_KEY=rb_live_...
+    ```
+
+    <Tip>
+      The dashboard's Quickstart page also shows your `org_id` and `project_id` next to a copy-pasteable snippet — the fastest way to get those values for tagging runs.
+    </Tip>
+  </Step>
+
+  <Step title="Initialize ReasonBlocks">
+    Import and initialize the `ReasonBlocks` client. Pass your API key directly or read it from the environment.
+
+    <CodeGroup>
+
+    ```python Pass API key directly
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(api_key="rb_live_...")
+    ```
+
+    ```python Read from environment
+    import os
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+    ```
+
+    </CodeGroup>
+
+    The `ReasonBlocks` object is reusable across runs. Create it once at startup, then call `rb.middleware()` once per agent invocation.
+  </Step>
+
+  <Step title="Add middleware to your agent">
+    Pass `rb.middleware()` in the `middleware` list when you create your agent. No other changes are required.
+
+    ```python
+    from langchain.agents import create_agent
+
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[...],
+        system_prompt="You are a senior software engineer.",
+        middleware=[rb.middleware()],
+    )
+    ```
+
+    ReasonBlocks hooks into two points in the agent loop:
+
+    - **before_model** — scores the last step, updates FSM state, runs monitors, retrieves E-traces, and injects steering signals
+    - **wrap_model_call** — optionally overrides the model based on FSM state and tracks token usage
+  </Step>
+
+  <Step title="Tag the run for the dashboard">
+    Call `rb.middleware()` with metadata parameters to label the run in the dashboard. All parameters are optional — omit any you don't need.
+
+    ```python
+    agent = create_agent(
+        model="anthropic:claude-sonnet-4-20250514",
+        tools=[...],
+        system_prompt="You are a senior software engineer.",
+        middleware=[rb.middleware(
+            org_id="6d3f...",              # uuid; "default" if omitted
+            project_id="a91b...",          # uuid; "default" if omitted
+            run_id="my-run-1",             # auto-generated if omitted
+            agent_name="bugfixer",         # free-form filter key
+            task="fix the TypeError",
+            model="claude-sonnet-4-20250514",
+            framework="langchain",
+            codebase_id="myrepo@sha:abc123",
+        )],
+    )
+    ```
+
+    These values appear on the **Runs** table in the dashboard. Use `run_id` to correlate a dashboard row with a specific invocation in your logs.
+
+    <Note>
+      When your API key is a per-customer `rb_live_*` key bound to an org, the ReasonBlocks API automatically overrides `org_id` and `project_id` with the key's authoritative scope. Most users can leave those two fields at their defaults.
+    </Note>
+  </Step>
+
+  <Step title="Run your agent">
+    Invoke your agent as you normally would. ReasonBlocks operates transparently — your agent code is unchanged, and steering happens inside the middleware layer.
+
+    ```python
+    result = agent.invoke({
+        "messages": [("user", "There's a TypeError in the request handler. Find and fix it.")]
+    })
+    ```
+
+    After the run completes, open the dashboard to see the scored steps, FSM state transitions, and any monitor signals that fired.
+  </Step>
+</Steps>
+
+## Complete example
+
+The following is a minimal but complete working example using a LangChain agent with mock tools:
+
+```python
+import os
+from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
+from langchain_core.tools import tool
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+
+@tool
+def search_codebase(query: str) -> str:
+    """Search the codebase for files matching a query."""
+    return f"No results for '{query}'"
+
+model = ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=1024)
+
+agent = create_agent(
+    model=model,
+    tools=[search_codebase],
+    system_prompt="You are a senior software engineer.",
+    middleware=[rb.middleware(
+        agent_name="bugfixer",
+        task="investigate the TypeError",
+    )],
+)
+
+result = agent.invoke({
+    "messages": [("user", "There's a TypeError in the request handler. Find it.")]
+})
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation options" icon="package" href="/installation">
+    Configure the base URL for self-hosted deployments and explore all init parameters
+  </Card>
+  <Card title="How it works" icon="gear" href="/concepts/how-it-works">
+    Understand FSM states, E-traces, and the monitoring pipeline in depth
+  </Card>
+  <Card title="Model routing" icon="shuffle" href="/guides/model-routing">
+    Route to cheaper models on easy steps and more powerful models when the agent is stuck
+  </Card>
+  <Card title="Full LangChain guide" icon="link" href="/guides/langchain">
+    In-depth guide covering LangGraph agents, async patterns, and configuration
+  </Card>
+</CardGroup>

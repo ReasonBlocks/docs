@@ -1,0 +1,275 @@
+---
+title: "Troubleshoot common ReasonBlocks issues"
+description: "Diagnose and fix common setup problems including import errors, missing API key, absent steering injections, and runs that stay in-progress in the dashboard."
+---
+
+Use these entries to diagnose the most frequently reported problems. Each entry describes a symptom, explains the root cause, and gives the fix.
+
+<AccordionGroup>
+  <Accordion title="AttributeError: module 'reasonblocks' has no attribute X">
+    **Symptom**
+
+    ```python
+    import reasonblocks
+    reasonblocks.TokenSavingMiddleware  # AttributeError
+    ```
+
+    **Cause**
+
+    The top-level `reasonblocks` package uses lazy imports. If you access a name directly from the module object without importing it explicitly, Python may not have loaded the submodule that defines it.
+
+    **Fix**
+
+    Import the class directly from its submodule:
+
+    ```python
+    # Do this
+    from reasonblocks import TokenSavingMiddleware
+    from reasonblocks import GeneralMonitorMiddleware
+    from reasonblocks import ReasonBlocksConfig, build_middleware
+
+    # Not this
+    import reasonblocks
+    mw = reasonblocks.TokenSavingMiddleware(...)   # may raise AttributeError
+    ```
+
+    All public names are re-exported from `reasonblocks/__init__.py` — the issue is only with attribute access on the module object before it has been fully initialized in some import orders.
+  </Accordion>
+
+  <Accordion title="ImportError: cannot import name 'AgentMiddleware' from 'langchain'">
+    **Symptom**
+
+    ```
+    ImportError: cannot import name 'AgentMiddleware' from 'langchain.agents.middleware'
+    ```
+
+    **Cause**
+
+    ReasonBlocks requires LangChain 1.0 or later. The `AgentMiddleware` base class and the `ModelRequest` / `ModelResponse` protocol were introduced in LangChain 1.0. Earlier versions do not have them.
+
+    **Fix**
+
+    ```bash
+    pip install "langchain>=1.0"
+    ```
+
+    If you are pinned to an earlier version for other reasons, check the ReasonBlocks changelog for the minimum version tested against your installed LangChain release.
+  </Accordion>
+
+  <Accordion title="ImportError: No module named 'networkx'">
+    **Symptom**
+
+    ```
+    ImportError: No module named 'networkx'
+    ```
+
+    **Cause**
+
+    `networkx` is only needed when you use `ImportGraph` (`reasonblocks.import_graph`), which builds a dependency graph over a codebase. It is an optional dependency, not installed by default.
+
+    **Fix**
+
+    Install `networkx` only if you intend to use `ImportGraph`:
+
+    ```bash
+    pip install networkx
+    ```
+
+    If you do not use `ImportGraph`, you can safely ignore this error — it only appears if something in your code imports `reasonblocks.import_graph` directly. Remove that import to avoid the error without installing `networkx`.
+  </Accordion>
+
+  <Accordion title="No steering injections appearing in any run">
+    **Symptom**
+
+    Every entry in `mw.step_log` has empty `injection_sources` and `intervention_texts`. The agent runs normally but receives no guidance.
+
+    **Cause and fix (check in order)**
+
+    **1. Missing or invalid `api_key`**
+
+    If `api_key` is empty, malformed, or revoked, all API calls will fail silently. Enable debug logging to see the errors:
+
+    ```python
+    import logging
+    logging.getLogger("reasonblocks").setLevel(logging.DEBUG)
+    ```
+
+    **2. Wrong `base_url`**
+
+    If you passed a `base_url` that is unreachable or incorrect, all API calls will time out silently. Verify the endpoint is reachable:
+
+    ```bash
+    curl -I https://your-rb-api-host/health
+    ```
+
+    **3. `e_traces_enabled=False`**
+
+    Check whether you passed `e_traces_enabled=False`. This disables the entire E-trace pipeline. The default is `True`.
+
+    **4. FSM staying in FAST state**
+
+    If all steps score below `fast_threshold` (default `0.2`), the FSM stays in FAST and skips E-traces. Inspect:
+
+    ```python
+    for entry in mw.step_log:
+        print(entry.step, entry.fsm_state, entry.difficulty)
+    ```
+
+    If `difficulty` is consistently low, your tasks may genuinely be easy, or the heuristic scorer may not be picking up the right signals for your agent's output format.
+
+    **5. No patterns in the store**
+
+    A brand-new account has no distilled patterns yet. E2 and E3 should still fire on the first run — if they do not, the API key or endpoint is the issue.
+  </Accordion>
+
+  <Accordion title="Agent never enters FAST mode">
+    **Symptom**
+
+    The FSM stays in `NORMAL` even on steps that appear straightforward. You expected cheaper model routing or reduced injection overhead in FAST state, but it never triggers.
+
+    **Cause**
+
+    The default `fast_threshold` is `0.2` and `fast_window` is `6`. The agent must score below `0.2` on **six consecutive steps** to enter FAST. If your agent's output includes hedging language, error references, or complex entities — even on easy steps — the heuristic scorer may push scores above `0.2`.
+
+    **Fix**
+
+    Raise `fast_threshold` or reduce `fast_window`:
+
+    ```python
+    rb = ReasonBlocks(
+        api_key="rb_live_...",
+        fsm_thresholds={
+            "fast_threshold": 0.30,   # easier to qualify as "easy"
+            "fast_window": 4,         # fewer consecutive steps needed
+        },
+    )
+    ```
+
+    You can also inspect the raw difficulty scores to calibrate:
+
+    ```python
+    scores = [e.difficulty for e in mw.step_log if e.difficulty is not None]
+    print(f"min={min(scores):.3f} avg={sum(scores)/len(scores):.3f} max={max(scores):.3f}")
+    ```
+  </Accordion>
+
+  <Accordion title="Too many steering injections — agent seems over-guided">
+    **Symptom**
+
+    Every step has injections from `MonitorSteeringInjection`. The agent appears to be getting too much guidance, which may be disrupting its reasoning.
+
+    **Cause**
+
+    `ReasonBlocksMiddleware` has an internal `_monitor_max_per_run` cap (currently `5`), so true over-injection from the monitor steering tier is capped at 5 injections per run. If you are seeing more than that, the injections are likely coming from E1, E2, or E3 rather than monitor steering.
+
+    If you are using `GeneralMonitorMiddleware` directly (not through `build_middleware`), the cooldown controls how often rules fire. The default is `cooldown=8` — a rule can fire at most once every 8 model calls.
+
+    **Fix**
+
+    To reduce general monitor firing frequency:
+
+    ```python
+    from reasonblocks import ReasonBlocksConfig, build_middleware
+
+    config = ReasonBlocksConfig(
+        enable_general_monitor=True,
+        gm_cooldown=15,       # raise from default 8
+        gm_max_tool_calls=50, # raise the reference budget
+    )
+    ```
+
+    To reduce monitor steering injections, raise the cooldown at the FSM level by adjusting how quickly the FSM enters SLOW (where injection frequency is highest):
+
+    ```python
+    rb = ReasonBlocks(
+        api_key="rb_live_...",
+        fsm_thresholds={
+            "slow_threshold": 0.70,   # harder to qualify as "struggling"
+            "slow_window": 7,         # more consecutive hard steps needed
+        },
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="TokenSavingMiddleware is not compressing tool outputs">
+    **Symptom**
+
+    Tool messages in the history are long, but `mw.stats.compressions` stays at `0` after the run.
+
+    **Cause**
+
+    The most common cause is middleware ordering. `TokenSavingMiddleware` must come **last** in the middleware list. If you constructed the list manually and placed it before `ReasonBlocksMiddleware`, it processes the message history before injections are added — but the key point is that it still only processes `ToolMessage` instances, and those may not yet exceed the threshold at the point it runs.
+
+    Other causes:
+    - Tool outputs are shorter than `compress_threshold_chars` (default `1800`). Check `len(tool_message.content)` for representative messages.
+    - `ts_enable_compression=False` was set explicitly.
+    - The last `ts_keep_recent_tool_messages` (default `2`) messages are protected from compression — if there are only 2 or fewer tool messages total, nothing is compressed.
+
+    **Fix**
+
+    Confirm ordering:
+
+    ```python
+    from reasonblocks import ReasonBlocksConfig, build_middleware
+
+    # build_middleware handles the correct order automatically
+    middleware = build_middleware(config, api, score_fn=..., fsm=..., state_manager=...)
+    ```
+
+    If you are constructing middleware manually, ensure `TokenSavingMiddleware` is the last item:
+
+    ```python
+    middleware = [
+        rb_middleware,
+        TokenSavingMiddleware(compress_threshold_chars=1800),  # last
+    ]
+    ```
+  </Accordion>
+
+  <Accordion title="Dashboard shows runs as 'in progress' indefinitely">
+    **Symptom**
+
+    Runs appear in the dashboard with a spinner or "in progress" status and never transition to "complete", even after the agent has finished.
+
+    **Cause**
+
+    ReasonBlocks emits a `run_finish` telemetry event to mark a run as complete. This happens automatically in two ways:
+
+    1. Via the `after_agent` hook — fired by LangChain after `agent.invoke()` or `agent.stream()` returns cleanly
+    2. Via the context manager `__exit__` — fired when the `with mw:` block exits
+
+    If neither fires — for example, the agent raises an exception that you catch outside the context manager, or you call `agent.invoke()` without the context manager — the `run_finish` event is never sent and the dashboard row stays open.
+
+    **Fix**
+
+    Use the context manager to guarantee the finish event fires even on exceptions:
+
+    ```python
+    mw = rb.middleware(run_id="my-run")
+
+    with mw:
+        result = agent.invoke({"messages": [HumanMessage(content="...")]})
+    ```
+
+    Or call `flush_session()` manually when you cannot use the context manager:
+
+    ```python
+    mw = rb.middleware(run_id="my-run")
+    try:
+        result = agent.invoke({"messages": [HumanMessage(content="...")]})
+    finally:
+        mw.flush_session(outcome_status="success")
+    ```
+
+    If you need to mark a run as failed explicitly:
+
+    ```python
+    mw.mark_failure(reason="GraphRecursionError")
+    mw.flush_session(outcome_status="failure")
+    ```
+
+    <Tip>
+      The context manager (`with mw:`) is the recommended pattern for all production use. It correctly handles success, exceptions, and explicit failure marking without any extra code.
+    </Tip>
+  </Accordion>
+</AccordionGroup>

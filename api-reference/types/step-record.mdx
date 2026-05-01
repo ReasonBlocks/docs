@@ -1,0 +1,116 @@
+---
+title: "StepRecord: per-step trace data"
+description: "Reference for the StepRecord dataclass — per-step fields captured by ReasonBlocks, and for TraceState, which tracks difficulty history and token totals."
+---
+
+ReasonBlocks records a `StepRecord` for every reasoning step the agent takes during a run. After the run completes you access the full list through `TraceState.steps`, along with aggregate fields like `difficulty_history` and `total_tokens`. Both types are dataclasses defined in `reasonblocks.types`.
+
+```python
+from reasonblocks.types import StepRecord, TraceState, FSMState
+```
+
+## StepRecord
+
+`StepRecord` captures the raw content and scoring result for one agent step.
+
+<ResponseField name="step_index" type="int" required>
+  Zero-based position of this step within the run. The first scored step is `0`.
+</ResponseField>
+
+<ResponseField name="thought" type="str" required>
+  The agent's reasoning text for this step — the content of the `Thought:` section parsed from the agent output. Always populated; empty string if the agent produced no explicit thought.
+</ResponseField>
+
+<ResponseField name="action" type="str | None">
+  The tool or action name the agent selected, if any. `None` for steps where the agent produced a final answer rather than a tool call.
+</ResponseField>
+
+<ResponseField name="action_input" type="str | None">
+  The input passed to the tool or action. `None` when `action` is `None`.
+</ResponseField>
+
+<ResponseField name="observation" type="str | None">
+  The tool's return value for this step. `None` for the final answer step and for any step where no tool was called.
+</ResponseField>
+
+<ResponseField name="difficulty" type="float">
+  Difficulty score for this step in the range `[0.0, 1.0]`. Higher values indicate the agent is struggling. Scores above `0.6` contribute toward a `SLOW` transition; scores above `0.85` count toward `SKIP`.
+</ResponseField>
+
+<ResponseField name="state" type="FSMState">
+  The FSM state *after* this step was scored. Reflects any state transition that occurred as a result of this step's difficulty score. See [FSMState](/api-reference/types/fsm-state) for the full state reference.
+</ResponseField>
+
+<ResponseField name="tokens_used" type="int">
+  Number of tokens consumed by the LLM call that produced this step. Summed across all steps in `TraceState.total_tokens`.
+</ResponseField>
+
+## TraceState
+
+`TraceState` is the internal state accumulator for the entire agent run. It is managed by the SDK and not directly exposed via `step_log` — you access per-step data via the `step_log` list instead. The fields below are documented here as a reference for their data shapes.
+
+<ResponseField name="trace_id" type="str" required>
+  Unique identifier for this run, set from the `run_id` you pass to `rb.middleware(run_id=...)`. Used to correlate steps with run-level events in the ReasonBlocks dashboard.
+</ResponseField>
+
+<ResponseField name="steps" type="list[StepRecord]">
+  Ordered list of every `StepRecord` captured during the run, from `step_index=0` to the final step. Empty until the first step is scored.
+</ResponseField>
+
+<ResponseField name="current_state" type="FSMState">
+  The FSM state at the end of the run (or at the point you read this field if you inspect it mid-run). Starts as `FSMState.INIT`.
+</ResponseField>
+
+<ResponseField name="difficulty_history" type="list[float]">
+  Flat list of difficulty scores in step order. Equivalent to `[s.difficulty for s in steps]`. Useful for plotting difficulty over time or computing aggregate statistics.
+</ResponseField>
+
+<ResponseField name="total_tokens" type="int">
+  Cumulative token count across all steps in the run. Sum of every `StepRecord.tokens_used` value.
+</ResponseField>
+
+<ResponseField name="token_budget" type="int | None">
+  The token budget configured for this run, if any. When set, the SDK uses this value to calculate `StepAssessment.budget_used` and may trigger early-exit behavior as the budget is approached. `None` if no budget was configured.
+</ResponseField>
+
+## Reading step_log after a run
+
+Access `step_log` on the middleware instance after the `with` block exits. `step_log` is a `list[StepLogEntry]` — one entry per model call — that includes FSM state, difficulty, monitors fired, and injection details for each step.
+
+<CodeGroup>
+
+```python Inspect all steps
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+with rb.middleware(run_id="run-1", agent_name="reviewer", task="review PR #42") as mw:
+    result = agent.invoke({"messages": [("user", "Review the changes in PR #42")]})
+
+for entry in mw.step_log:
+    print(
+        f"  [{entry.step}] difficulty={entry.difficulty:.2f}  "
+        f"state={entry.fsm_state}  action={entry.tool_calls}"
+    )
+```
+
+```python Find slow steps
+slow_steps = [
+    e for e in mw.step_log
+    if e.fsm_state in ("SLOW", "SKIP")
+]
+print(f"{len(slow_steps)} slow/skip steps out of {len(mw.step_log)} total")
+```
+
+```python Average difficulty
+entries = [e for e in mw.step_log if e.difficulty is not None]
+if entries:
+    avg = sum(e.difficulty for e in entries) / len(entries)
+    print(f"Average difficulty: {avg:.3f}")
+```
+
+</CodeGroup>
+
+<Tip>
+  Use `entry.as_dict()` on any `StepLogEntry` to get a serialisable dict with all fields, useful for logging or exporting run data.
+</Tip>
