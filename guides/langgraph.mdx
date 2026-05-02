@@ -1,0 +1,218 @@
+---
+title: "Use ReasonBlocks with LangGraph"
+description: "Two integration shapes: rb.middleware() for create_agent-based LangGraph apps, SteeringSession for hand-rolled StateGraphs."
+---
+
+LangChain 1.0's `create_agent` is built on LangGraph — it returns a `CompiledStateGraph` you `invoke` like any other graph. So if you're already using `create_agent`, the [LangChain guide](/guides/langchain) and `rb.middleware()` apply unchanged: the middleware hooks `before_model` / `wrap_model_call` on the underlying graph runtime.
+
+This page is for the second shape: **hand-rolling your own `StateGraph`**. There's no `AgentMiddleware` slot to plug into when you're defining nodes and edges yourself, so you wire a [`SteeringSession`](/api-reference/steering-session) into the graph by hand. Same pipeline, same telemetry, same monitor + E-trace + routing behavior — just expressed as graph nodes instead of middleware hooks.
+
+## Path 1: `create_agent` (LangGraph under the hood)
+
+If you build your agent with `create_agent`, you don't need a LangGraph-specific integration. The middleware works as documented in the [LangChain guide](/guides/langchain):
+
+```python
+from langchain.agents import create_agent
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+with rb.middleware(agent_name="reviewer", task="...") as mw:
+    agent = create_agent(
+        model="anthropic:claude-haiku-4-5-20251001",
+        tools=[...],
+        middleware=[mw],
+    )
+    result = agent.invoke({"messages": [...]})
+```
+
+The returned graph is a `langgraph.graph.state.CompiledStateGraph`. Every step runs through the FSM scorer, monitor evaluator, E-trace pipeline, and live telemetry emitter — same as a non-LangGraph LangChain agent.
+
+## Path 2: hand-rolled `StateGraph`
+
+When you build a graph from scratch with `langgraph.graph.StateGraph`, you call the model from your own node function. Wire `SteeringSession` around that node so the pipeline runs on every model call.
+
+<Steps>
+  <Step title="Install">
+    ```bash
+    pip install reasonblocks "langgraph>=0.2" langchain-anthropic
+    ```
+  </Step>
+
+  <Step title="Build the steering session">
+    `rb.claude_messages_session(...)` builds a session wired against an Anthropic model identifier. `rb.middleware(...).session` does the same against any LangChain `init_chat_model` identifier — but for hand-rolled graphs without `create_agent`, the cleaner path is to construct `SteeringSession` directly so you can choose your own framework label.
+
+    ```python
+    import os
+    from reasonblocks import (
+        DifficultyFSM, ReasonBlocks, SteeringSession, TraceStateManager,
+    )
+    from reasonblocks.api import ReasonBlocksAPI
+    from reasonblocks.injections import create_injections
+    from reasonblocks.monitors import create_monitors
+    from reasonblocks.streaming_emitter import StreamingEmitter
+    from reasonblocks.monitor_client import MonitorClient
+
+    rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+
+    api = ReasonBlocksAPI(api_key=rb._api_key)
+    state_manager = TraceStateManager()
+    session = SteeringSession(
+        score_fn=rb.score_step,
+        fsm=DifficultyFSM(),
+        state_manager=state_manager,
+        injections=create_injections(api, create_monitors(None)),
+        model_routing=rb._model_routing or None,
+        emitter=StreamingEmitter(MonitorClient(api_key=rb._api_key)),
+        run_id=state_manager.trace_id,
+        run_metadata={
+            "agent_name": "reviewer", "task": "...",
+            "framework": "langgraph", "task_profile": "coding",
+        },
+    )
+    ```
+
+    <Note>
+      Most users won't build a session this manually — call `rb.claude_messages_session(...)` (for Claude) or wrap with `rb.openai_model(...)` (for OpenAI) and let those factories assemble the pieces. The hand-built form is shown here because pure-StateGraph users typically pick their own model adapter.
+    </Note>
+  </Step>
+
+  <Step title="Define your graph nodes">
+    Two node helpers — one before the LLM call, one after — keep the steering pipeline orthogonal to the rest of your graph.
+
+    ```python
+    from typing import TypedDict, Annotated, Any
+    from langchain_anthropic import ChatAnthropic
+    from langchain.messages import AIMessage, HumanMessage, SystemMessage
+    from langgraph.graph import StateGraph, END
+    from langgraph.graph.message import add_messages
+    import time
+
+    class GraphState(TypedDict):
+        messages: Annotated[list, add_messages]
+        system_prompt: str
+        # Carries the StepDecision between pre and post nodes.
+        _rb_decision: Any
+
+    def steering_pre(state: GraphState) -> dict:
+        # Last assistant content is the "thought" for scoring.
+        thought = None
+        for m in reversed(state["messages"]):
+            if isinstance(m, AIMessage) and m.content:
+                thought = m.content if isinstance(m.content, str) else " ".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b)
+                    for b in m.content
+                )
+                break
+        decision = session.begin_step(thought=thought)
+        return {"_rb_decision": decision}
+
+    _model_cache: dict[str, Any] = {}
+    def _resolve_model(model_id: str) -> Any:
+        if model_id not in _model_cache:
+            _model_cache[model_id] = ChatAnthropic(model=model_id, max_tokens=2048)
+        return _model_cache[model_id]
+
+    def llm_node(state: GraphState) -> dict:
+        decision = state["_rb_decision"]
+        system = decision.compose_system_prompt(state["system_prompt"])
+        model_id = (
+            decision.model_override.split(":", 1)[1]
+            if decision.model_override and ":" in decision.model_override
+            else decision.model_override or "claude-haiku-4-5-20251001"
+        )
+        model = _resolve_model(model_id)
+
+        t0 = time.perf_counter()
+        response = model.invoke([SystemMessage(content=system), *state["messages"]])
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+        # Pull token usage off the response for the post node.
+        tokens = 0
+        usage = getattr(response, "usage_metadata", None)
+        if isinstance(usage, dict):
+            tokens = int(usage.get("total_tokens") or 0)
+        tool_calls = [tc.get("name") for tc in (response.tool_calls or [])]
+
+        return {
+            "messages": [response],
+            "_rb_meta": {
+                "model_id": model_id, "tokens": tokens,
+                "tool_calls": tool_calls, "latency_ms": elapsed_ms,
+            },
+        }
+
+    def steering_post(state: GraphState) -> dict:
+        decision = state["_rb_decision"]
+        meta = state.get("_rb_meta") or {}
+        session.end_step(decision, **meta)
+        return {}
+    ```
+  </Step>
+
+  <Step title="Compose the graph + run">
+    ```python
+    builder = StateGraph(GraphState)
+    builder.add_node("steering_pre", steering_pre)
+    builder.add_node("llm", llm_node)
+    builder.add_node("steering_post", steering_post)
+    builder.set_entry_point("steering_pre")
+    builder.add_edge("steering_pre", "llm")
+    builder.add_edge("llm", "steering_post")
+    builder.add_edge("steering_post", END)
+
+    graph = builder.compile()
+
+    with session:
+        out = graph.invoke({
+            "messages": [HumanMessage(content="What's wrong with MarkerWidget?")],
+            "system_prompt": "You are a debugging assistant.",
+            "_rb_decision": None,
+        })
+    ```
+
+    Looping (multi-step) graphs cycle through `steering_pre` → `llm` → `steering_post` → router → `steering_pre` again until the router decides the run is done. Each cycle produces one `step_log` entry on `session`.
+  </Step>
+
+  <Step title="Inspect the step log">
+    ```python
+    for entry in session.step_log:
+        print(entry.as_dict())
+    ```
+
+    Same shape as `mw.step_log` from the LangChain middleware: difficulty, FSM state, monitors fired, injection text, model id used, tokens, and latency.
+  </Step>
+</Steps>
+
+## What the LangGraph integration shares with LangChain
+
+Identical: FSM scoring, server-side monitor evaluation, E1/E2/E3 retrieval, model routing, telemetry emission. Both ultimately drive the same [`SteeringSession`](/api-reference/steering-session). When LangChain 1.0 calls your middleware's `before_model` hook, it's running on the LangGraph runtime — that's why our existing tests cover both paths.
+
+## What you don't get on the hand-rolled path
+
+Token-saving compression and the general-monitor middleware are LangChain `AgentMiddleware` implementations. They're plumbed through `create_agent` but don't have a hand-rolled `StateGraph` analog yet. Use the `rb.middleware()` + `create_agent` path if you need those.
+
+## Codebase memory tools
+
+`make_langchain_tools` returns `@tool`-decorated functions that work in any LangGraph node, including hand-rolled graphs:
+
+```python
+from reasonblocks import CodebaseMemory, ImportGraph
+from reasonblocks.integrations.langchain_tools import make_langchain_tools
+
+memory = CodebaseMemory(codebase_id="my-org/my-repo", api_key=rb._api_key)
+graph_tools = make_langchain_tools(memory)
+```
+
+Bind them to your model (`ChatAnthropic(...).bind_tools(graph_tools)`) or attach to a `ToolNode`. The contract is unchanged from the LangChain integration.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="LangChain guide" icon="link" href="/guides/langchain">
+    Full middleware walkthrough for `create_agent`-based agents.
+  </Card>
+  <Card title="SteeringSession reference" icon="layer-group" href="/api-reference/steering-session">
+    The shared core driving every framework integration.
+  </Card>
+</CardGroup>

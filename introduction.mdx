@@ -10,16 +10,18 @@ ReasonBlocks is a Python SDK for production AI agents. It works with LangChain, 
 
 ## What works on which framework
 
-| Capability | LangChain | OpenAI Agents | Claude Messages | Claude Agent SDK |
-|---|---|---|---|---|
-| Telemetry to the dashboard | yes | yes | yes | yes |
-| FSM step scoring | yes | yes | yes | — |
-| Server-side monitor steering | yes | yes | yes | — |
-| E-trace injection (E1 / E2 / E3) | yes | yes | yes | — |
-| Model routing | yes | yes (with factory) | yes | — |
-| Token-saving compression + early exit | yes | — | — | — |
-| `CodebaseMemory` tool factory | yes | yes | yes | yes |
-| `ImportGraph` blast-radius queries | yes | yes | yes | yes |
+| Capability | LangChain | LangGraph | OpenAI Agents | Claude Messages | Claude Agent SDK |
+|---|---|---|---|---|---|
+| Telemetry to the dashboard | yes | yes | yes | yes | yes |
+| FSM step scoring | yes | yes | yes | yes | — |
+| Server-side monitor steering | yes | yes | yes | yes | — |
+| E-trace injection (E1 / E2 / E3) | yes | yes | yes | yes | — |
+| Model routing | yes | yes | yes (with factory) | yes | — |
+| Token-saving compression + early exit | yes | via `create_agent` | — | — | — |
+| `CodebaseMemory` tool factory | yes | yes | yes | yes | yes |
+| `ImportGraph` blast-radius queries | yes | yes | yes | yes | yes |
+
+LangChain 1.0's `create_agent` is built on LangGraph, so the LangChain and LangGraph rows track each other for `create_agent`-based apps. For hand-rolled `StateGraph`s, the [LangGraph guide](/guides/langgraph) shows how to wire the steering pipeline into your own graph nodes.
 
 The four entry points are:
 
@@ -75,6 +77,9 @@ On every step of a LangChain agent, the `ReasonBlocks` middleware:
   </Card>
   <Card title="LangChain guide" icon="link" href="/guides/langchain">
     Full middleware walkthrough.
+  </Card>
+  <Card title="LangGraph guide" icon="diagram-project" href="/guides/langgraph">
+    Steering for `create_agent` graphs and hand-rolled `StateGraph`s.
   </Card>
   <Card title="OpenAI Agents guide" icon="robot" href="/guides/openai-agents">
     Wrap an `openai-agents` Model with the full steering pipeline.

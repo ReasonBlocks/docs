@@ -48,6 +48,7 @@
             "group": "Using ReasonBlocks",
             "pages": [
               "guides/langchain",
+              "guides/langgraph",
               "guides/openai-agents",
               "guides/claude-messages",
               "guides/claude-agent-sdk",
