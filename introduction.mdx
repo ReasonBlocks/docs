@@ -1,46 +1,66 @@
 ---
 title: "What is ReasonBlocks?"
-description: "ReasonBlocks is a Python SDK that adds step scoring, E-trace injection, and health monitoring to LangChain and OpenAI Agents apps without changing your agent code."
+description: "ReasonBlocks is a Python SDK for production AI agents. It works with LangChain, the OpenAI Agents SDK, the Claude Messages API, and the Claude Agent SDK."
 ---
 
-ReasonBlocks is middleware for AI agents. It sits between your agent loop and the LLM, scoring each reasoning step, detecting when the agent is struggling, and injecting targeted guidance from a live pattern store — all without changing your agent's logic or message history.
+ReasonBlocks is a Python SDK for production AI agents. It works with LangChain, the OpenAI Agents SDK, the Anthropic Messages API, and the Claude Agent SDK. Two capability areas are exposed across these frameworks:
 
-## What it does
+- **Steering** — score each agent step, evaluate server-side trajectory monitors, inject E-trace guidance from a pattern store, and optionally route the model based on a difficulty FSM. The pipeline is shared via [`SteeringSession`](/api-reference/steering-session) and wired into each framework through a small adapter (LangChain middleware, Claude Messages loop helper, OpenAI Agents `Model` wrapper). The Claude Agent SDK path is telemetry-only because its agent loop runs inside the Claude Code CLI process.
+- **Codebase knowledge** — `CodebaseMemory` for semantic per-repo findings storage and `ImportGraph` for Python blast-radius analysis. Both ship framework-specific tool factories (`make_langchain_tools`, `make_openai_tools`, `make_claude_tools`, `make_claude_agent_sdk_tools`) so the same memory layer plugs into whichever agent runtime you use.
 
-On every step of the agent loop, ReasonBlocks:
+## What works on which framework
 
-1. **Scores** the agent's last reasoning step for difficulty using signals like hedging language, error density, and entity count
-2. **Classifies** the run into a state — `FAST`, `NORMAL`, `SLOW`, or `SKIP` — using a finite state machine with hysteresis
-3. **Monitors** for unhealthy patterns: infinite loops, repeated test failures, edit-revert thrashing, and more
-4. **Injects** targeted E-trace guidance from a pattern store into the system prompt before the next model call
-5. **Routes** the model call to a cheaper or more capable model based on the current FSM state
+| Capability | LangChain | OpenAI Agents | Claude Messages | Claude Agent SDK |
+|---|---|---|---|---|
+| Telemetry to the dashboard | yes | yes | yes | yes |
+| FSM step scoring | yes | yes | yes | — |
+| Server-side monitor steering | yes | yes | yes | — |
+| E-trace injection (E1 / E2 / E3) | yes | yes | yes | — |
+| Model routing | yes | yes (with factory) | yes | — |
+| Token-saving compression + early exit | yes | — | — | — |
+| `CodebaseMemory` tool factory | yes | yes | yes | yes |
+| `ImportGraph` blast-radius queries | yes | yes | yes | yes |
 
-The result is an agent that catches its own stuck patterns earlier, receives relevant guidance at exactly the right time, and costs less to run by routing easy steps to faster models.
+The four entry points are:
 
-## Who it's for
+- **`rb.middleware()`** — LangChain 1.0 `AgentMiddleware`. The reference implementation; full pipeline + token-saving + general-monitor middleware compose alongside it.
+- **`rb.openai_model(default_model, ...)`** — wraps an `openai-agents` `Model` so `Agent(model=...)` runs the pipeline before each `get_response` call. Pair with an optional `model_factory` to enable model routing.
+- **`rb.claude_messages_session()`** — builds a [`SteeringSession`](/api-reference/steering-session) you pass into [`run_messages_agent_loop(..., session=...)`](/api-reference/integrations/claude-tools#run_messages_agent_loop). The loop drives Anthropic's Messages API tool-use turns and runs steering at every turn.
+- **`rb.claude_agent_telemetry()`** — telemetry-only adapter for the Claude Agent SDK `query()` stream. The agent loop is inside Claude Code, so steering can't apply, but per-tool `run_start` / `step` / `run_finish` events are emitted to the dashboard.
 
-ReasonBlocks is designed for teams building production AI agents on LangChain 1.0 or the OpenAI Agents SDK. If your agents suffer from loops, excessive tool call counts, or inconsistent task completion, ReasonBlocks gives you the observability and steering infrastructure to fix that without rewriting your agent logic.
+Token-saving compression + early exit are LangChain-only today (the implementation is itself an `AgentMiddleware`).
+
+## What the steering pipeline does
+
+On every step of a LangChain agent, the `ReasonBlocks` middleware:
+
+1. Scores the agent's last reasoning step using a heuristic that combines hedging density, response length, error language, and entity density.
+2. Advances a difficulty FSM (`INIT`, `FAST`, `NORMAL`, `SLOW`, `SKIP`) using the score plus recent history.
+3. Posts the current trace to the ReasonBlocks API's `/monitors/evaluate` endpoint, which runs the monitor suite server-side and returns a steering intervention when the trajectory looks broken.
+4. Retrieves up to three tiers of E-traces from the pattern store: E1 (instance-level, gated by monitor signal), E2 (failure-mode patterns), and E3 (universal rules, fired once on the first call).
+5. Renders any pending injections into a `[REASONBLOCKS]` block appended to the system message, and overrides the model if `model_routing` maps the current FSM state to a different model.
+6. Streams per-step telemetry to the ReasonBlocks dashboard.
 
 ## Key capabilities
 
 <CardGroup cols={2}>
-  <Card title="E-Trace injection" icon="brain" href="/concepts/e-traces">
-    Pull instance-level, pattern-level, and universal guidance from a live pattern store and inject it into the system prompt at the right moment
+  <Card title="E-trace injection" icon="brain" href="/concepts/e-traces">
+    Three tiers of guidance pulled from the pattern store and appended to the system message.
   </Card>
   <Card title="FSM state machine" icon="diagram-project" href="/concepts/fsm-states">
-    Track agent difficulty across FAST, NORMAL, SLOW, and SKIP states with configurable thresholds and hysteresis
+    Tracks agent difficulty across `FAST`, `NORMAL`, `SLOW`, and `SKIP` with hysteresis.
   </Card>
-  <Card title="Health monitors" icon="heart-pulse" href="/concepts/monitors">
-    Detect loops, hedging, edit-revert thrashing, and test-repeat failures automatically using a configurable monitor suite
+  <Card title="Server-side monitors" icon="heart-pulse" href="/concepts/monitors">
+    `/monitors/evaluate` runs trajectory monitors and returns steering interventions.
   </Card>
   <Card title="Model routing" icon="shuffle" href="/guides/model-routing">
-    Route to a fast model on easy steps and a more powerful model when the agent is struggling — with zero changes to your agent code
+    Map FSM states to model identifiers and let the middleware swap models per step.
   </Card>
   <Card title="Codebase memory" icon="database" href="/guides/codebase-memory">
-    Persist and recall per-repo findings semantically across agent runs using `CodebaseMemory`
+    Persist and recall per-repo findings semantically across agent runs.
   </Card>
   <Card title="Token saving" icon="scissors" href="/guides/token-saving">
-    Compress stale tool outputs and nudge stuck agents toward an early exit to reduce context window usage
+    Compress stale tool outputs and exit early when local monitors signal exhaustion.
   </Card>
 </CardGroup>
 
@@ -48,15 +68,21 @@ ReasonBlocks is designed for teams building production AI agents on LangChain 1.
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Add ReasonBlocks to your agent in under five minutes
+    Add ReasonBlocks to a LangChain agent in five minutes.
   </Card>
   <Card title="Installation" icon="package" href="/installation">
-    Install the SDK and configure your API key
-  </Card>
-  <Card title="How it works" icon="gear" href="/concepts/how-it-works">
-    Understand FSM states, E-traces, and the monitoring pipeline
+    Install the SDK and configure the client.
   </Card>
   <Card title="LangChain guide" icon="link" href="/guides/langchain">
-    Step-by-step integration guide for LangChain and LangGraph agents
+    Full middleware walkthrough.
+  </Card>
+  <Card title="OpenAI Agents guide" icon="robot" href="/guides/openai-agents">
+    Wrap an `openai-agents` Model with the full steering pipeline.
+  </Card>
+  <Card title="Claude Messages guide" icon="comments" href="/guides/claude-messages">
+    Drive the Anthropic Messages tool-use loop with steering.
+  </Card>
+  <Card title="Claude Agent SDK guide" icon="terminal" href="/guides/claude-agent-sdk">
+    Telemetry + codebase memory tools for the Claude Agent SDK.
   </Card>
 </CardGroup>

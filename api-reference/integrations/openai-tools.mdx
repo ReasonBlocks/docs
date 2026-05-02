@@ -1,17 +1,15 @@
 ---
 title: "OpenAI Agents SDK tool factories"
-description: "make_openai_tools() creates function_tool callables for the openai-agents SDK, wiring CodebaseMemory recall, finding storage, and impact analysis."
+description: "make_openai_tools() returns function_tool callables for the openai-agents SDK, wiring CodebaseMemory recall, finding storage, and import-graph impact analysis."
 ---
 
-`make_openai_tools` wraps a `CodebaseMemory` instance and an optional `ImportGraph` in `@function_tool`-decorated callables that the OpenAI Agents SDK understands natively. Pass the returned list directly to `Agent(tools=[...])` alongside your own tools. The tools share the same `memory` and `graph` objects you provide, so findings stored during one step are immediately available on the next recall.
+`make_openai_tools` wraps a `CodebaseMemory` instance and an optional `ImportGraph` in `@function_tool`-decorated callables for the `openai-agents` SDK. Pass the returned list directly to `Agent(tools=[...])`.
 
 ```python
 from reasonblocks.integrations import make_openai_tools
 ```
 
 ## Installation
-
-The OpenAI Agents integration requires the `openai-agents` package:
 
 ```bash
 pip install reasonblocks openai-agents
@@ -32,80 +30,74 @@ make_openai_tools(
 ) -> list
 ```
 
-Returns a list of `@function_tool`-decorated callables ready for `Agent(tools=[...])`. The list contains up to three tools depending on the arguments and flags you provide.
+Returns up to three `@function_tool`-decorated callables (`recall_findings`, `store_finding`, `impact_analysis`) depending on which arguments and flags you provide.
 
 ### Parameters
 
 <ParamField path="memory" type="CodebaseMemory | None" default="None">
-  The `CodebaseMemory` instance the tools read from and write to. When `None`, both `recall_findings` and `store_finding` are omitted from the returned list regardless of `enable_recall` and `enable_store`.
+  The `CodebaseMemory` instance the tools read from and write to. When `None`, both `recall_findings` and `store_finding` are omitted regardless of the enable flags.
 </ParamField>
 
 <ParamField path="graph" type="ImportGraph | None" default="None">
-  Optional `ImportGraph` for the repository. When provided and `enable_impact=True`, an `impact_analysis` tool is added to the returned list.
+  Optional `ImportGraph`. When provided and `enable_impact=True`, an `impact_analysis` tool is added.
 </ParamField>
 
 <ParamField path="recall_top_k" type="int" default="5">
-  Maximum number of findings to return from a single `recall_findings` call. Increasing this value provides more context at the cost of additional tokens.
+  Maximum number of findings per `recall_findings` call.
 </ParamField>
 
 <ParamField path="recall_threshold" type="float" default="0.25">
-  Minimum similarity score (0–1) a finding must reach to appear in recall results. Lower values return more results with potentially lower relevance.
+  Minimum similarity score for recall results.
 </ParamField>
 
 <ParamField path="enable_recall" type="bool" default="true">
-  Include the `recall_findings` tool. Set to `False` to produce a write-only or impact-only tool set.
+  Include `recall_findings`. Has no effect when `memory is None`.
 </ParamField>
 
 <ParamField path="enable_store" type="bool" default="true">
-  Include the `store_finding` tool. Set to `False` for read-only scenarios where the agent should not persist new observations.
+  Include `store_finding`. Has no effect when `memory is None`.
 </ParamField>
 
 <ParamField path="enable_impact" type="bool" default="true">
-  Include the `impact_analysis` tool when a `graph` is provided. Set to `False` to suppress it even when `graph` is not `None`.
+  Include `impact_analysis` when a `graph` is provided.
 </ParamField>
 
 ### Returns
 
 <ResponseField name="tools" type="list">
-  A list of `@function_tool`-decorated callables. Safe to spread into an `Agent` tool list: `tools=[*rb_tools, *your_tools]`.
+  A list of `@function_tool`-decorated callables. Spread into the `Agent` tool list: `tools=[*rb_tools, *your_tools]`.
 </ResponseField>
 
 ## Tools
 
 ### `recall_findings(query)`
 
-Searches `CodebaseMemory` for findings relevant to `query`. The agent should call this **before** reading a file — if findings already exist, it can skip the file read entirely and avoid wasting tokens.
+Searches `CodebaseMemory` and returns the formatted recall string.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `query` | `str` | Natural-language description of what you are looking for |
 
-Returns a formatted string of matching findings, or a message indicating nothing was found.
-
 ### `store_finding(content, file_path, finding_type)`
 
-Persists a new finding to `CodebaseMemory` so future agent runs can recall it. Store small, self-contained facts. Avoid storing long paragraphs; keep each entry tight and factual.
+Persists a finding. Returns `"stored (id=<fid>)"` on success or `"store failed"` on transport error.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `content` | `str` | — | The finding text (under 8 000 characters) |
-| `file_path` | `str` | `""` | Repo-relative path the finding is about, if applicable |
-| `finding_type` | `str` | `"note"` | Short tag: `bug`, `behavior`, `pattern`, or `note` |
-
-Returns `"stored (id=<fid>)"` on success or `"store failed"` on error.
+| `content` | `str` | — | The finding text (truncated to 8000 chars) |
+| `file_path` | `str` | `""` | Repo-relative path (truncated to 512 chars) |
+| `finding_type` | `str` | `"note"` | Short tag (truncated to 64 chars) |
 
 ### `impact_analysis(file_path)`
 
-Queries the `ImportGraph` to return the dependents (files that import this file) and dependencies (files this file imports). Use it to judge the blast radius of a proposed change before modifying a file.
+Calls `ImportGraph.format_impact()` and returns the rendered string.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `file_path` | `str` | Repo-relative path, e.g. `"pydantic/main.py"` |
 
-Returns a formatted string listing dependents and dependencies.
-
 <Note>
-  `impact_analysis` is only present when you pass a non-`None` `graph` **and** `enable_impact=True`. Check `len(rb_tools)` rather than assuming a fixed index if you build your tool list conditionally.
+  `impact_analysis` is only present when you pass a non-`None` `graph` **and** `enable_impact=True`. Check `len(rb_tools)` rather than assuming a fixed index if you build the list conditionally.
 </Note>
 
 ## Complete example
@@ -114,17 +106,14 @@ Returns a formatted string listing dependents and dependencies.
 
 ```python Basic usage
 import asyncio
+import pathlib
 from agents import Agent, Runner
-from reasonblocks import ReasonBlocks
-from reasonblocks.codebase_memory import CodebaseMemory
-from reasonblocks.import_graph import ImportGraph
+from reasonblocks import CodebaseMemory, ImportGraph, ReasonBlocks
 from reasonblocks.integrations import make_openai_tools
 
-import pathlib
-
-rb     = ReasonBlocks(api_key="rb_live_...")
-memory = CodebaseMemory(codebase_id="my-repo")
-graph  = ImportGraph().build_from_files(
+rb = ReasonBlocks(api_key="rb_live_...")
+memory = CodebaseMemory(codebase_id="my-repo", api_key="rb_live_...")
+graph = ImportGraph().build_from_files(
     {str(p): p.read_text() for p in pathlib.Path("myrepo").rglob("*.py")}
 )
 
@@ -158,7 +147,7 @@ asyncio.run(main())
 rb_tools = make_openai_tools(
     memory,
     graph,
-    enable_store=False,  # agent cannot persist findings
+    enable_store=False,
 )
 ```
 
@@ -167,7 +156,7 @@ rb_tools = make_openai_tools(
     memory,
     graph,
     recall_top_k=10,
-    recall_threshold=0.35,  # stricter — only high-confidence matches
+    recall_threshold=0.35,
 )
 ```
 
@@ -175,10 +164,10 @@ rb_tools = make_openai_tools(
 
 ## Telemetry: openai_hooks
 
-`make_openai_tools` handles tool wiring only. ReasonBlocks telemetry — step scoring, FSM state tracking, and E-trace injection — is provided separately by `rb.openai_hooks()`, which returns a `ReasonBlocksHooks` object you pass to `Runner.run(hooks=...)`.
+`make_openai_tools` handles tool wiring only. Run telemetry — `run_start`, per-step events, and `run_finish` — is provided separately by `rb.openai_hooks()`, which returns a `RunHooks` adapter you pass to `Runner.run(hooks=...)`.
 
 <Warning>
-  If you pass tools to `Agent` but omit `hooks` from `Runner.run`, your agent will use CodebaseMemory normally but ReasonBlocks will not emit any telemetry or inject E-trace guidance. Both are needed for full ReasonBlocks functionality.
+  `openai_hooks` is telemetry-only. Unlike the LangChain middleware, it does **not** inject E-trace steering text into the agent's prompt. The OpenAI Agents SDK has no `before_model` analog to splice content into the system prompt mid-run; running `openai_hooks` gives you dashboard rows and per-step events but not in-loop steering.
 </Warning>
 
 For the full `openai_hooks` reference and lifecycle details, see the [OpenAI Agents integration guide](/guides/openai-agents).

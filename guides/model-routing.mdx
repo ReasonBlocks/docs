@@ -1,30 +1,29 @@
 ---
-title: "Route models by agent difficulty"
-description: "Switch models automatically based on FSM difficulty state — cheaper models on easy steps, more powerful models when the agent is struggling."
+title: "Route models by FSM state"
+description: "Map FSM states to model identifiers so easy steps run on a cheap model and hard steps escalate. Routing is keyed on the live FSM state inside wrap_model_call."
 ---
 
-ReasonBlocks tracks the agent's difficulty across every step using a finite state machine. When difficulty stays low for several consecutive steps, the FSM moves to `FAST`. When it stays high, the FSM moves to `SLOW`. Model routing maps those states to different model identifiers, so you can run a cheap fast model on easy steps and a more powerful model when the agent is struggling — with no changes to your agent code.
+ReasonBlocks tracks each step's difficulty through a finite state machine. By passing `model_routing` to the `ReasonBlocks` constructor, you can map any of the four post-INIT states (`FAST`, `NORMAL`, `SLOW`, `SKIP`) to a model identifier. The middleware swaps the model on the active `ModelRequest` inside `wrap_model_call`, before pattern injections render — so format-routing pattern selection sees the post-routing model family.
 
 <Note>
-  Model routing is disabled by default. It activates only when you pass `model_routing` to the `ReasonBlocks` constructor.
+  Model routing is opt-in. Without `model_routing`, the agent's configured model runs every step.
 </Note>
 
-## How the FSM states affect routing
+## How states map to routing
 
-The FSM has five states: `INIT`, `FAST`, `NORMAL`, `SLOW`, and `SKIP`. Two of them affect model routing:
-
-| State | When it activates | Effect on routing |
+| State | Trigger | Routing |
 |---|---|---|
-| `FAST` | Last 6 difficulty scores all below `0.2` | Routes to the `FAST` model; also skips E-trace retrieval |
-| `SLOW` | Last 5 difficulty scores all above `0.6` | Routes to the `SLOW` model |
-| `NORMAL` | Default; between FAST and SLOW thresholds | No routing override — uses the agent's configured model |
-| `SKIP` | Last 35 difficulty scores all above `0.85` | No routing override — agent is likely stuck |
+| `INIT` | First call only | No routing override |
+| `FAST` | All scores in `fast_window` (default 6) below `fast_threshold` (default `0.2`) | Routed if mapped; **also skips E1/E2/E3 retrieval** |
+| `NORMAL` | Default working state | Routed if mapped |
+| `SLOW` | All scores in `slow_window` (default 5) above `slow_threshold` (default `0.6`) | Routed if mapped |
+| `SKIP` | All scores in `skip_window` (default 35) above `skip_threshold` (default `0.85`) | Routed if mapped |
 
-When the FSM is in `FAST` state, ReasonBlocks skips the E-trace retrieval pipeline (vector search + embeddings) entirely in addition to switching models. This means fast, confident steps cost less in both LLM tokens and API calls to the pattern store.
+`FAST` is the only state that affects E-trace retrieval — it skips E1, E2, and E3 because the agent is sailing through. Monitor scoring still runs in `FAST` so loop detection stays active. Any state can be mapped or unmapped independently; unmapped states leave the agent's configured model untouched.
 
 ## Configure routing
 
-Pass a `model_routing` dict to `ReasonBlocks` mapping FSM state names (`"FAST"`, `"SLOW"`) to model identifiers. The identifiers follow LangChain's `init_chat_model` format — `"provider:model-name"`.
+Keys must match FSMState names: `"FAST"`, `"NORMAL"`, `"SLOW"`, `"SKIP"`. Values follow LangChain's `init_chat_model` format (`"provider:model-name"`).
 
 ```python
 from reasonblocks import ReasonBlocks
@@ -32,16 +31,18 @@ from reasonblocks import ReasonBlocks
 rb = ReasonBlocks(
     api_key="rb_live_...",
     model_routing={
-        "FAST": "anthropic:claude-haiku-4-5-20251001",
-        "SLOW": "anthropic:claude-sonnet-4-20250514",
+        "FAST":   "anthropic:claude-haiku-4-5-20251001",
+        "NORMAL": "anthropic:claude-haiku-4-5-20251001",
+        "SLOW":   "anthropic:claude-sonnet-4-20250514",
+        "SKIP":   "anthropic:claude-sonnet-4-20250514",
     },
 )
 ```
 
-You don't need to specify both states. Omitting a state means that state uses the agent's default model:
+You don't have to map every state. Omit any you don't want to override:
 
 ```python
-# Only upgrade to Sonnet when struggling — fast steps use the agent's default
+# Only escalate when struggling — every other state uses the agent's default model
 rb = ReasonBlocks(
     api_key="rb_live_...",
     model_routing={
@@ -50,9 +51,43 @@ rb = ReasonBlocks(
 )
 ```
 
-## Customize FSM thresholds
+The middleware caches resolved chat models per id (`init_chat_model` is called once per unique id and reused).
 
-The default thresholds (`fast_threshold=0.2`, `slow_threshold=0.6`, `skip_threshold=0.85`) work well for most coding agents. You can tune them for your workload via `fsm_thresholds`:
+## Inspect routing decisions
+
+`StepLogEntry.model_id` holds the resolved model id when routing fired on that step. Steps with no routing override leave it empty.
+
+```python
+mw = rb.middleware(agent_name="bugfixer")
+agent = create_agent(..., middleware=[mw])
+
+with mw:
+    result = agent.invoke({"messages": [("user", "Fix the bug.")]})
+
+for entry in mw.step_log:
+    routed = f" -> {entry.model_id}" if entry.model_id else ""
+    print(f"step {entry.step}: {entry.fsm_state}{routed} difficulty={entry.difficulty}")
+```
+
+Sample output:
+
+```
+step 0: INIT (first call)
+step 1: NORMAL difficulty=0.512
+step 2: NORMAL difficulty=0.489
+step 3: NORMAL difficulty=0.141
+step 4: NORMAL difficulty=0.098
+step 5: NORMAL difficulty=0.077
+step 6: NORMAL difficulty=0.061
+step 7: FAST -> anthropic:claude-haiku-4-5-20251001 difficulty=0.055
+step 8: FAST -> anthropic:claude-haiku-4-5-20251001 difficulty=0.043
+step 9: NORMAL difficulty=0.731
+step 10: SLOW -> anthropic:claude-sonnet-4-20250514 difficulty=0.812
+```
+
+## Tune the FSM thresholds
+
+Pass `fsm_thresholds` to adjust when routing transitions happen. See [Advanced configuration](/configuration/advanced) for the full set of knobs and the hysteresis rule that prevents thrashing at boundaries.
 
 ```python
 rb = ReasonBlocks(
@@ -62,68 +97,14 @@ rb = ReasonBlocks(
         "SLOW": "anthropic:claude-sonnet-4-20250514",
     },
     fsm_thresholds={
-        "fast_threshold": 0.2,   # all steps below this for 6 consecutive steps → FAST
-        "slow_threshold": 0.6,   # all steps above this for 5 consecutive steps → SLOW
-        "skip_threshold": 0.85,  # all steps above this for 35 consecutive steps → SKIP
+        "fast_threshold": 0.15,   # require very-easy steps to drop to FAST
+        "slow_threshold": 0.65,   # require clearly-hard steps to escalate
+        "fast_window":    4,      # react sooner to easy runs
+        "slow_window":    3,      # react sooner to struggling runs
     },
 )
 ```
 
 <Tip>
-  Lower `fast_threshold` to keep the agent on the cheap model longer. Raise `slow_threshold` to delay escalation to the powerful model. Both changes reduce cost but may affect quality on genuinely hard problems.
+  Lowering `fast_threshold` keeps the agent on the cheap model longer. Raising `slow_threshold` delays escalation. Either change reduces cost; both can affect quality on genuinely hard work.
 </Tip>
-
-The FSM also has a `hysteresis_margin` (default `0.1`) that prevents thrashing at state boundaries. A state transition requires the difficulty to cross the threshold by at least this margin before switching back.
-
-## Full configuration example
-
-This is the complete configuration from the README, combining model routing with all other available options:
-
-```python
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(
-    api_key="rb_live_...",
-    token_budget=100_000,
-    monitor_names=["loop", "confidence", "evidence", "budget", "strategy_exhaustion"],
-    fsm_thresholds={
-        "fast_threshold": 0.2,
-        "slow_threshold": 0.6,
-        "skip_threshold": 0.85,
-    },
-    model_routing={
-        "FAST": "anthropic:claude-haiku-4-5-20251001",
-        "SLOW": "anthropic:claude-sonnet-4-20250514",
-    },
-    e_traces_enabled=True,
-)
-```
-
-## Inspect routing decisions
-
-After a run, `mw.step_log` shows the resolved model ID for each step. The `model_id` field is only populated when routing overrode the agent's default model.
-
-```python
-mw = rb.middleware(agent_name="bugfixer")
-agent = create_agent(..., middleware=[mw])
-result = agent.invoke({"messages": [("user", "Fix the bug.")]})
-
-for entry in mw.step_log:
-    routed = f" → {entry.model_id}" if entry.model_id else ""
-    print(f"Step {entry.step}: {entry.fsm_state}{routed} (difficulty={entry.difficulty:.3f})")
-```
-
-Example output showing a run that starts in `NORMAL`, drops to `FAST` for several steps, then escalates to `SLOW`:
-
-```
-Step 0: NORMAL (difficulty=0.512)
-Step 1: NORMAL (difficulty=0.489)
-Step 2: NORMAL (difficulty=0.141)
-Step 3: NORMAL (difficulty=0.098)
-Step 4: NORMAL (difficulty=0.077)
-Step 5: NORMAL (difficulty=0.061)
-Step 6: FAST → anthropic:claude-haiku-4-5-20251001 (difficulty=0.055)
-Step 7: FAST → anthropic:claude-haiku-4-5-20251001 (difficulty=0.043)
-Step 8: NORMAL (difficulty=0.731)
-Step 9: SLOW → anthropic:claude-sonnet-4-20250514 (difficulty=0.812)
-```

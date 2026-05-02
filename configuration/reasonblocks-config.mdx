@@ -1,14 +1,36 @@
 ---
 title: "ReasonBlocksConfig: full configuration reference"
-description: "Complete reference for the ReasonBlocksConfig dataclass — every tier toggle, token-saving lever, and routing field for assembling the full middleware stack."
+description: "Reference for the ReasonBlocksConfig dataclass and build_middleware factory — an alternate path to assembling the middleware stack from a single dataclass."
 ---
 
-`ReasonBlocksConfig` is a single dataclass that controls every ReasonBlocks capability. Instead of wiring individual middleware classes by hand, you fill in a config object and pass it to `build_middleware()`, which assembles the correct middleware stack in the right order automatically.
+`ReasonBlocksConfig` is a dataclass that captures every middleware capability and its tunables. `build_middleware(config, api, ...)` consumes the config and returns an ordered middleware list ready to pass to `create_agent(middleware=...)`.
+
+<Note>
+  `ReasonBlocksConfig` + `build_middleware()` is an **alternate path**, parallel to `rb.middleware()`. They share zero state. Use one or the other in a given run — don't mix them.
+
+  - **`rb.middleware()`** — the simpler path. One `ReasonBlocks` instance, one middleware per run. Wires telemetry, FSM, monitor steering, E1/E2/E3, and model routing all in one object.
+  - **`build_middleware(config, api, ...)`** — the explicit path. You pass an `api`, a `score_fn`, an `fsm`, a `state_manager`, and get back an ordered list. Useful when you want to add `GeneralMonitorMiddleware` or compose middleware around your own custom scorer.
+</Note>
+
+## build_middleware ordering
+
+`build_middleware` returns the list in this order:
+
+1. `ReasonBlocksMiddleware` (only when at least one of `enable_e1`, `enable_e2`, `enable_e3`, `enable_monitor_steering` is `True`).
+2. `GeneralMonitorMiddleware` (when `enable_general_monitor=True`).
+3. `TokenSavingMiddleware` last (when `enable_token_saving=True`), so it compresses what earlier middleware injected before the LLM call goes out.
+
+When `ReasonBlocksMiddleware` is included, you must pass `score_fn`, `fsm`, and `state_manager` — `build_middleware` raises `ValueError` otherwise.
 
 ## Complete example
 
 ```python
-from reasonblocks import ReasonBlocksAPI, ReasonBlocksConfig, build_middleware
+from reasonblocks import (
+    ReasonBlocksAPI, ReasonBlocksConfig, build_middleware,
+)
+from reasonblocks.fsm import DifficultyFSM
+from reasonblocks.state import TraceStateManager
+from reasonblocks.client import ReasonBlocks
 
 api = ReasonBlocksAPI(api_key="rb_live_...")
 
@@ -20,16 +42,11 @@ config = ReasonBlocksConfig(
     enable_monitor_steering=True,
     enable_general_monitor=False,
     enable_token_saving=True,
-    enable_distillation=True,
 
-    # Token-saving levers
+    # Token-saving
     ts_compress_threshold_chars=1800,
     ts_keep_recent_tool_messages=2,
     ts_enable_early_exit=True,
-
-    # General monitor levers
-    gm_max_tool_calls=30,
-    gm_cooldown=8,
 
     # Routing / scoping
     customer_id="acme",
@@ -38,148 +55,151 @@ config = ReasonBlocksConfig(
 
 middleware = build_middleware(
     config, api,
-    score_fn=score_fn,
-    fsm=fsm,
-    state_manager=state_manager,
+    score_fn=ReasonBlocks.score_step,
+    fsm=DifficultyFSM(),
+    state_manager=TraceStateManager(),
+    run_id="my-run-1",
+    run_metadata={"agent_name": "bugfixer"},
 )
 
 agent = create_agent(model=..., tools=..., middleware=middleware)
 ```
 
-<Note>
-`build_middleware()` assembles the list in the correct order: `ReasonBlocksMiddleware` first, then `GeneralMonitorMiddleware` (if enabled), then `TokenSavingMiddleware` last so it compresses what earlier middleware injected before the LLM call goes out.
-</Note>
-
 ---
 
 ## Tier toggles
 
-These fields turn each major capability on or off.
-
 <ParamField path="enable_e1" type="bool" default="True">
-  Enable customer-scoped instance-level pattern injection. E1 retrieves the top-1 pattern from your customer's pattern scope. Disable to stop E1 injections entirely without affecting E2, E3, or monitors.
+  Enable customer-scoped instance-level pattern injection. Capped at one retrieval call per run.
 </ParamField>
 
 <ParamField path="enable_e2" type="bool" default="True">
-  Enable pattern-level injection keyed on the monitor state description. E2 retrieves patterns from the shared pattern store that match the current failure family detected by monitors.
+  Enable commons-pattern injection keyed on the failure family detected by monitors. Capped at one retrieval call per run.
 </ParamField>
 
 <ParamField path="enable_e3" type="bool" default="True">
-  Enable universal standing-rule injection. E3 fires on the first agent call of every run (scroll-all) to establish baseline guidance. Subsequent calls skip E3 unless the state changes.
+  Enable universal standing-rule injection. Fires on the first call only (step 0); subsequent steps skip E3.
 </ParamField>
 
 <ParamField path="enable_monitor_steering" type="bool" default="True">
-  Enable server-side trajectory monitor evaluation. When fired, monitor results steer which E-trace tier retrieves and what gets injected into the system prompt.
+  Enable server-side trajectory monitor evaluation via `POST /monitors/evaluate`. When fired, monitor results steer which E-trace tier retrieves and what gets injected into the system message. Per-run injection cap: 5. Cooldowns by FSM state: SLOW/SKIP=2 steps, NORMAL=3, FAST=5.
 </ParamField>
 
 <ParamField path="enable_general_monitor" type="bool" default="False">
-  Enable the v1 rule-firing general monitor pack. This opt-in pack runs five rule-based detectors (repeated attempts, error without diagnosis, exploration sprawl, idle response, low-novelty tail) with a per-rule cooldown. When enabled, `GeneralMonitorMiddleware` is inserted between `ReasonBlocksMiddleware` and `TokenSavingMiddleware`.
+  Enable the v1 rule-firing pack (`GeneralMonitorMiddleware`). Five rule-based detectors with priority-ordered dispatch and per-rule cooldown. When enabled, it's inserted between `ReasonBlocksMiddleware` and `TokenSavingMiddleware`.
 </ParamField>
 
 <ParamField path="enable_token_saving" type="bool" default="True">
-  Enable tool-output compression and the early-exit nudge. `TokenSavingMiddleware` is appended last in the stack so it compresses whatever earlier middleware has injected before the LLM call goes out.
+  Enable `TokenSavingMiddleware`. Appended last so it compresses whatever earlier middleware injected.
 </ParamField>
 
 <ParamField path="enable_distillation" type="bool" default="True">
-  Enable trace distillation. When `True`, the SDK submits completed session traces to the ReasonBlocks API at session end so new E1 patterns can be mined for future runs. Set to `False` to prevent trace data from this customer's runs from being ingested — useful for staging environments or data-residency requirements.
+  {/* TODO: verify against rb-api — currently this flag is read but not consumed inside build_middleware. Treat as reserved for future use. */}
+  Reserved. Currently a no-op in `build_middleware()` — set or unset, the SDK behaves the same. Documented for forward compatibility.
+</ParamField>
+
+---
+
+## Tier parameters
+
+<ParamField path="e1_top_k" type="int" default="1">
+  E1 retrieval top-k. The middleware caps E1 at one retrieval per run regardless. Server-side gates further filter results.
+</ParamField>
+
+<ParamField path="e2_top_k" type="int" default="2">
+  E2 retrieval top-k.
+</ParamField>
+
+<ParamField path="e3_max_patterns" type="int" default="32">
+  Maximum patterns retrieved on the E3 first-call sweep.
+</ParamField>
+
+<ParamField path="e1_sim_gate_doc" type="float" default="0.80">
+  **Documentation only.** The actual gate is enforced server-side by rb-api as an env-global. Setting this in the config does not change server behavior; it's recorded so callers can see the value rb-api is configured with.
+</ParamField>
+
+<ParamField path="e2_sim_gate_doc" type="float" default="0.70">
+  **Documentation only.** Same caveat as `e1_sim_gate_doc`.
 </ParamField>
 
 ---
 
 ## Token-saving levers
 
-These fields control how `TokenSavingMiddleware` compresses the message history and when it injects the early-exit nudge.
-
 <ParamField path="ts_compress_threshold_chars" type="int" default="1800">
-  Character length above which a `ToolMessage` body is eligible for head+tail truncation. Tool messages shorter than this threshold are left untouched.
+  Character length above which a `ToolMessage` body is eligible for head+tail truncation.
 </ParamField>
 
 <ParamField path="ts_head_keep_chars" type="int" default="900">
-  Number of characters to keep from the beginning of a compressed tool message.
+  Characters kept from the start of a compressed tool message.
 </ParamField>
 
 <ParamField path="ts_tail_keep_chars" type="int" default="700">
-  Number of characters to keep from the end of a compressed tool message. Combined with `ts_head_keep_chars`, the total kept content is at most `900 + 700 = 1600` chars plus an omission marker.
+  Characters kept from the end of a compressed tool message.
 </ParamField>
 
 <ParamField path="ts_keep_recent_tool_messages" type="int" default="2">
-  Number of the most recent `ToolMessage` instances to leave uncompressed. The agent keeps full visibility into the step it is actively reasoning about.
+  Number of most-recent `ToolMessage` instances exempted from compression.
 </ParamField>
 
 <ParamField path="ts_enable_compression" type="bool" default="True">
-  Master toggle for tool-output head+tail compression. Set to `False` to disable compression while keeping the early-exit nudge active.
+  Master toggle for head+tail tool-output compression.
 </ParamField>
 
 <ParamField path="ts_enable_early_exit" type="bool" default="True">
-  Enable the early-exit nudge. Once the agent has made at least `ts_early_exit_min_call_index` model calls, the middleware checks for loop-like signals (streak, hedge, diversity) and injects a `HumanMessage` telling the agent to stop and submit its current best answer.
+  Enable the early-exit nudge. When enabled, `build_middleware` automatically wires `default_suite_signals` as the `signals_fn`.
 </ParamField>
 
 <ParamField path="ts_early_exit_min_call_index" type="int" default="40">
-  Minimum number of model calls before the early-exit nudge can fire. Prevents premature exits on short runs.
+  Minimum number of model calls before the early-exit nudge can fire.
 </ParamField>
 
 ---
 
 ## Perplexity compression
 
-Perplexity compression applies word-level keep/drop decisions to stale messages, going further than head+tail truncation. It is **off by default** and requires you to supply a `WordClassifier` callable.
+Perplexity compression is **off by default**. See [TokenSavingMiddleware](/guides/token-saving) for context.
 
 <ParamField path="ts_enable_perplexity_compression" type="bool" default="False">
-  Enable LLMLingua-2-style word-level compression on stale messages. Requires `ts_perplexity_classifier` to be set. When the classifier is `None`, perplexity compression is silently skipped even if this flag is `True`.
+  Enable LLMLingua-2-style word-level keep/drop on stale messages. Requires `ts_perplexity_classifier`; silently skipped if it's `None`.
 </ParamField>
 
 <ParamField path="ts_perplexity_classifier" type="WordClassifier | None" default="None">
-  A `WordClassifier` callable with signature `(list[str]) -> list[bool]`. Each `True` in the output means the corresponding word is kept. Use `reasonblocks.token_saving.make_anthropic_classifier` to create a production classifier backed by Claude Haiku.
-
-  ```python
-  import anthropic
-  from reasonblocks.token_saving import make_anthropic_classifier
-
-  classifier = make_anthropic_classifier(
-      client=anthropic.Anthropic(),
-      model="claude-haiku-4-5-20251001",
-      target_keep_ratio=0.5,
-  )
-
-  config = ReasonBlocksConfig(
-      ts_enable_perplexity_compression=True,
-      ts_perplexity_classifier=classifier,
-  )
-  ```
+  A `Callable[[list[str]], list[bool]]`. Use `reasonblocks.token_saving.make_anthropic_classifier` for the shipped Haiku-as-classifier wiring.
 </ParamField>
 
 <ParamField path="ts_perplexity_recent_cutoff" type="int" default="3">
-  Messages within the last N model calls keep full fidelity — perplexity compression does not touch them. Calls 0 through N-1 back are in the "recent" tier.
+  Messages within the last N model calls keep full fidelity.
 </ParamField>
 
 <ParamField path="ts_perplexity_mid_cutoff" type="int" default="10">
-  Messages between `ts_perplexity_recent_cutoff` and this cutoff use the mid keep ratio. Messages older than this cutoff use the old keep ratio.
+  Messages between `ts_perplexity_recent_cutoff` and this cutoff use the mid keep ratio. Older messages use the old keep ratio.
 </ParamField>
 
 <ParamField path="ts_perplexity_keep_ratio_mid" type="float" default="0.55">
-  Target word-keep ratio for messages in the mid tier. A value of `0.55` means roughly 55% of words in mid-tier messages are retained.
+  Target word-keep ratio for mid-tier messages.
 </ParamField>
 
 <ParamField path="ts_perplexity_keep_ratio_old" type="float" default="0.30">
-  Target word-keep ratio for old-tier messages (older than `ts_perplexity_mid_cutoff` calls). More aggressive than the mid ratio.
+  Target word-keep ratio for old-tier messages.
 </ParamField>
 
 <ParamField path="ts_perplexity_window_words" type="int" default="50">
-  Number of words per classifier window. Smaller windows produce finer-grained decisions at the cost of more classifier API calls. Larger windows are coarser but cheaper.
+  Words per classifier window. Smaller = more API calls, finer decisions.
 </ParamField>
 
 ---
 
 ## General monitor levers
 
-These fields apply only when `enable_general_monitor=True`.
+Apply only when `enable_general_monitor=True`.
 
 <ParamField path="gm_max_tool_calls" type="int" default="30">
-  Total tool-call budget for the general monitor. Several detectors (exploration sprawl, idle response, low-novelty tail) use this as the reference limit for their proportional thresholds.
+  Reference budget used by sprawl, idle-response, and low-novelty-tail detectors.
 </ParamField>
 
 <ParamField path="gm_cooldown" type="int" default="8">
-  Minimum number of model calls between firings of the same rule. Prevents repeated injections from the same detector on consecutive steps.
+  Minimum model calls between firings of the same rule.
 </ParamField>
 
 ---
@@ -187,18 +207,17 @@ These fields apply only when `enable_general_monitor=True`.
 ## Routing and scoping
 
 <ParamField path="customer_id" type="str | None" default="None">
-  Customer identifier used by E1 retrieval to narrow pattern search to this customer's scope. When `None`, E1 retrieves from the global pattern store. Set this to the same customer identifier you use in your user database — for example, your tenant ID or organization slug.
+  Used by E1 retrieval to narrow patterns to the customer's scope. When `None`, E1 retrieves from the global pattern store.
 </ParamField>
 
 <ParamField path="monitor_task_profile" type="str" default="&quot;coding&quot;">
-  Server-side monitor weight profile. Built-in values are `"coding"` (default), `"pr_review"`, and `"qa"`. Each profile shifts which monitors are weighted most heavily. See [monitor weight profiles](/configuration/monitor-profiles) for the exact weight differences between profiles.
+  Server-side monitor weight profile. Real values referenced in the SDK: `"coding"` (default), `"pr_review"`. See [Monitor profiles](/configuration/monitor-profiles) for the per-profile weight tables (which live in rb-api, not the SDK).
 </ParamField>
 
 <ParamField path="monitor_weights" type="dict[str, float] | None" default="None">
-  Optional per-monitor weight override applied on top of the profile. Partial dicts are accepted — monitors not listed fall through to the profile, then to server defaults. Unknown monitor names are dropped server-side, and negative weights are clamped to `0`.
+  Optional explicit weight override forwarded to `MonitorSteeringInjection` and through to `POST /monitors/evaluate`. Partial dicts are accepted — unspecified monitors fall through to the profile, then to server defaults. Unknown monitor names are dropped server-side; negative weights are clamped to `0`.
 
   ```python
-  # Boost loop-detection sensitivity and reduce hedging weight
   config = ReasonBlocksConfig(
       monitor_task_profile="coding",
       monitor_weights={"streak": 0.5, "hedge": 0.05},

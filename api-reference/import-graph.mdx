@@ -212,10 +212,14 @@ print(summary)
 #     -> pydantic/utils.py
 ```
 
-The output lists up to 15 importers and 15 dependencies by default. When there are more, a `(+N more)` line is appended.
+The output lists up to `limit` importers and `limit` dependencies. When there are more, a `(+N more)` line is appended.
 
 <ParamField path="file_path" type="string" required>
   The file to analyze. The path is first run through `resolve()`, so bare filenames and partial paths work. Returns a descriptive message string if the file is not in the graph.
+</ParamField>
+
+<ParamField path="limit" type="integer" default="15">
+  Maximum number of importers and dependencies to list before truncating with a `(+N more)` line.
 </ParamField>
 
 <ResponseField name="return" type="string">

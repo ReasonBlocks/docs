@@ -1,9 +1,9 @@
 ---
 title: "FSMState: agent difficulty state enum"
-description: "Reference for the FSMState enum — the six states ReasonBlocks uses to classify agent difficulty per step and trigger model routing and E-trace injection."
+description: "Reference for the FSMState enum — the six states ReasonBlocks uses to classify per-step difficulty and trigger model routing, monitor injection cooldowns, and E-trace gating."
 ---
 
-`FSMState` is the enum at the heart of ReasonBlocks' difficulty tracking. After scoring each reasoning step, the SDK advances a finite state machine through these states to determine whether to skip E-trace retrieval, switch models, or escalate to a more aggressive intervention. You read the current state from `TraceState.current_state` and from individual `StepRecord.state` fields in `step_log`.
+`FSMState` is the enum at the heart of ReasonBlocks' difficulty tracking. After scoring each reasoning step, the SDK advances a finite state machine through these states to determine model routing, monitor-injection cooldowns, and whether to skip the E-trace retrieval pipeline. You read the current state from `TraceState.current_state` and from per-step `StepLogEntry.fsm_state` fields exposed on the middleware.
 
 ```python
 from reasonblocks.types import FSMState
@@ -11,86 +11,83 @@ from reasonblocks.types import FSMState
 
 ## States
 
-| State | Trigger condition | Behavior |
-|-------|-------------------|----------|
-| `INIT` | Start of every run | Transitions to `NORMAL` on the first scored step |
-| `FAST` | All recent steps below `fast_threshold` (0.2) | Skips E-trace retrieval; routes to cheap model if routing is configured |
-| `NORMAL` | Default when difficulty is neither consistently low nor high | Full E-trace pipeline runs; default model used |
-| `SLOW` | All recent steps above `slow_threshold` (0.6) | Routes to strong model if routing is configured; E-trace injection enabled |
-| `SKIP` | Extended struggle: 35+ consecutive steps above `skip_threshold` (0.85) | Most severe intervention; the SDK forces a skip injection to break the loop |
-| `END` | Agent produced a final answer | Run is complete; no further scoring or injection occurs |
+| State | Trigger condition (built-in FSM) | Behavior |
+|-------|----------------------------------|----------|
+| `INIT` | Set at construction time | First `before_model` call transitions to `NORMAL` |
+| `FAST` | Six consecutive scores below `fast_threshold` (0.2) | Skips the full E-trace retrieval pipeline; routes to the FAST-tier model when `model_routing` includes a `FAST` entry; monitors still evaluate. Monitor injection cooldown: 5 steps |
+| `NORMAL` | Default operating state | E-trace pipeline runs, gated by the E1 retrieval gate. Monitor injection cooldown: 3 steps |
+| `SLOW` | Five consecutive scores above `slow_threshold` (0.6) | Routes to the SLOW-tier model when configured. Monitor injection cooldown: 2 steps |
+| `SKIP` | Reached only from `SLOW` after 35 consecutive scores above `skip_threshold` (0.85) | Routing and cooldown identical to `SLOW`; signals an exceptionally stalled run for downstream tooling |
+| `END` | Defined in the enum | Not entered by the built-in `DifficultyFSM`. Reserved for callers that ship a custom transition function |
+
+The default thresholds and windows live on `DifficultyFSM`; override them via `ReasonBlocks(fsm_thresholds={...})`.
 
 ## State reference
 
 ### `FSMState.INIT`
 
-The machine starts in `INIT` at the beginning of every run. It does not persist past the first scored step — the FSM transitions to `NORMAL` immediately after the first step is assessed. You will typically only see `INIT` in `StepRecord.state` for step index 0.
+The trace starts in `INIT`. The first scored step transitions to `NORMAL`. You will only see `INIT` on the very first `before_model` call (before any thought has been produced).
 
 ### `FSMState.FAST`
 
-The FSM enters `FAST` when all steps in the recent difficulty window fall below `fast_threshold` (default `0.2`). In `FAST` state, the SDK skips the E-trace retrieval round-trip entirely — the agent is performing well and does not need steering. If you have model routing configured, the SDK routes the next LLM call to the cheaper fast model.
+Entered from `NORMAL` when the most recent six difficulty scores are all below `fast_threshold` (default `0.2`). In `FAST`, the middleware skips the full E-trace retrieval pipeline (`E1`, `E2`, `E3`); monitors still run so loop and trajectory-length detectors keep working. If `model_routing` contains a `FAST` entry, the next call uses that model.
 
 ### `FSMState.NORMAL`
 
-`NORMAL` is the default operating state. The full E-trace pipeline runs: the SDK queries the pattern store, ranks results by similarity, and injects the best-matching guidance into the system prompt. The model specified in your `ReasonBlocks` config is used without rerouting.
+The default state. The E-trace pipeline runs, with E1 retrieval further gated by recent monitor activity (see the [middleware notes](/api-reference/reasonblocks)). The model from your `ReasonBlocks` config is used unless `model_routing` overrides it for `NORMAL`.
 
 ### `FSMState.SLOW`
 
-The FSM transitions to `SLOW` when all steps in the recent window exceed `slow_threshold` (default `0.6`). This indicates the agent is consistently struggling. E-trace injection continues, and if model routing is configured the SDK upgrades the next call to the strong model.
+Entered from `NORMAL` when the most recent five difficulty scores all exceed `slow_threshold` (default `0.6`). E-traces continue to be retrieved; if `model_routing` contains a `SLOW` entry the next call swaps to that model.
 
 <Note>
-  The FSM uses hysteresis — it requires the *entire* recent window to be above or below the threshold before changing state. A single high-difficulty step does not immediately push the run into `SLOW`.
+  Both `FAST` and `SLOW` exit on a single contrary score with hysteresis: from `FAST`, a score above `fast_threshold + hysteresis_margin` (0.3) returns to `NORMAL`; from `SLOW`, a score below `slow_threshold - hysteresis_margin` (0.5) returns to `NORMAL`.
 </Note>
 
 ### `FSMState.SKIP`
 
-`SKIP` is the most severe intervention state. The FSM enters `SKIP` after 35 or more consecutive steps where difficulty exceeds `skip_threshold` (default `0.85`). At this point the SDK injects a hard skip directive into the system prompt, instructing the agent to exit its current approach and produce a partial answer. This is a last-resort measure to prevent infinite loops from consuming your entire token budget.
-
-<Warning>
-  Once the FSM enters `SKIP`, every subsequent step receives the skip injection until the agent produces a final answer and transitions to `END`. You cannot manually reset the state mid-run.
-</Warning>
+Entered from `SLOW` when 35 consecutive scores all exceed `skip_threshold` (default `0.85`). For routing and monitor-injection cooldown purposes, `SKIP` is identical to `SLOW`; it is a separate label so dashboards and downstream code can flag exceptionally stalled runs. There is no special "skip injection" — the same monitor steering and E-trace machinery applies.
 
 ### `FSMState.END`
 
-The FSM enters `END` when the agent emits a final answer. No further step scoring, E-trace retrieval, or injection occurs after this transition. The `TraceState` is frozen and available for inspection.
+`END` is defined in the enum but the built-in `DifficultyFSM.transition` never returns it. The state exists for callers that supply a custom transition function that wants to mark a trace as terminal. Reading `END` from a stock SDK installation indicates manual intervention.
 
-## Checking the current state
+## Monitor injection cooldowns
 
-After a run completes, read `current_state` from the middleware's `step_log`:
+Monitor steering injection respects per-state cooldowns to avoid over-steering. The middleware caps monitor injections at 5 per run total.
 
-<CodeGroup>
+| State | Cooldown (steps between monitor injections) |
+|-------|---------------------------------------------|
+| `FAST` | 5 |
+| `NORMAL` | 3 |
+| `SLOW` | 2 |
+| `SKIP` | 2 |
 
-```python LangChain
+## Reading state after a run
+
+```python
 from reasonblocks import ReasonBlocks
-from reasonblocks.types import FSMState
 
 rb = ReasonBlocks(api_key="rb_live_...")
 
 with rb.middleware(run_id="run-1", agent_name="bugfixer", task="...") as mw:
     result = agent.invoke({"messages": [("user", "Fix the failing tests.")]})
 
-# mw.step_log is a list[StepLogEntry], one entry per model call
 for entry in mw.step_log:
     print(entry.step, entry.fsm_state, entry.difficulty)
 ```
 
-```python Check for escalation
-slow_or_skip = [e for e in mw.step_log if e.fsm_state in ("SLOW", "SKIP")]
-if slow_or_skip:
-    print("Agent struggled — review the trace for injections")
-```
-
-</CodeGroup>
+`StepLogEntry.fsm_state` is the string value of the enum (e.g. `"FAST"`, `"NORMAL"`); use `FSMState(entry.fsm_state)` to round-trip back to the enum.
 
 ## Values
 
-`FSMState` is a standard Python `enum.Enum`. Each member's `.value` is its uppercase string name, which is also what appears in the ReasonBlocks dashboard and API responses.
+`FSMState` is a standard `enum.Enum`. Each member's `.value` is its uppercase string name, which is also what appears in the dashboard.
 
 ```python
+FSMState.INIT.value    # "INIT"
 FSMState.FAST.value    # "FAST"
 FSMState.NORMAL.value  # "NORMAL"
 FSMState.SLOW.value    # "SLOW"
 FSMState.SKIP.value    # "SKIP"
-FSMState.INIT.value    # "INIT"
 FSMState.END.value     # "END"
 ```

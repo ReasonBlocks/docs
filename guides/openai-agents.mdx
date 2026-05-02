@@ -1,114 +1,187 @@
 ---
 title: "Use ReasonBlocks with OpenAI Agents"
-description: "Integrate ReasonBlocks telemetry and codebase memory tools into OpenAI Agents SDK applications using hooks and the make_openai_tools factory."
+description: "Two integration shapes: rb.openai_model wraps a Model with the full steering pipeline, rb.openai_hooks emits telemetry only. Plus codebase memory tools."
 ---
 
-ReasonBlocks integrates with the OpenAI Agents SDK through `RunHooks` — a callback object you pass to `Runner.run`. The `rb.openai_hooks()` method builds a hooks instance that fires the same `run_start`, `step`, and `run_finish` telemetry events as the LangChain middleware, so your dashboard runs look identical regardless of which framework you use.
+ReasonBlocks integrates with the OpenAI Agents SDK two ways depending on how much of the pipeline you want:
+
+- **`rb.openai_model(default_model, ...)`** — wraps any `openai-agents` `Model` so the agent runs FSM step scoring, server-side monitor steering, E-trace injection, and (with a `model_factory`) model routing on every `get_response` call. This is the parity path with the LangChain middleware.
+- **`rb.openai_hooks(...)`** — telemetry-only `RunHooks` adapter. Use this when you want dashboard rows + token / tool capture but don't need steering. Cheaper and stays out of the model path entirely.
+
+The `make_openai_tools` factory for `CodebaseMemory` + `ImportGraph` works alongside either entry point.
+
+## Path 1: full steering with `rb.openai_model`
 
 <Steps>
-  <Step title="Install dependencies">
-    Install ReasonBlocks and the OpenAI Agents SDK.
+  <Step title="Install">
+    ```bash
+    pip install reasonblocks openai-agents
+    ```
+  </Step>
 
+  <Step title="Build a wrapped Model">
+    Pass an underlying `Model` instance (typically `OpenAIChatCompletionsModel` or `OpenAIResponsesModel`) and an optional `model_factory` to enable FSM-driven model routing.
+
+    ```python
+    import os
+    from agents import Agent, Runner, OpenAIChatCompletionsModel
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(
+        api_key=os.environ["REASONBLOCKS_API_KEY"],
+        model_routing={
+            "FAST": "gpt-4o-mini",
+            "SLOW": "gpt-4o",
+        },
+    )
+
+    wrapped = rb.openai_model(
+        default_model=OpenAIChatCompletionsModel("gpt-4o"),
+        model_factory=lambda mid: OpenAIChatCompletionsModel(mid),
+        agent_name="reviewer",
+        task="describe what this run is doing",
+        model="gpt-4o",
+    )
+    ```
+
+    Without `model_factory`, routing overrides log to the step entry but the wrapped default model is always used. With it, the wrapper builds and caches alternates lazily.
+  </Step>
+
+  <Step title="Use as the agent's model + run">
+    `wrapped` is itself a sync and async context manager that flushes the live-telemetry emitter on exit.
+
+    <Tabs>
+      <Tab title="Async">
+        ```python
+        import asyncio
+
+        async def main():
+            agent = Agent(
+                name="reviewer",
+                instructions="You are a senior code reviewer.",
+                model=wrapped,
+                tools=[...],
+            )
+
+            async with wrapped:
+                result = await Runner.run(agent, input="Review PR #42")
+
+            return result
+
+        asyncio.run(main())
+        ```
+      </Tab>
+      <Tab title="Sync">
+        ```python
+        agent = Agent(name="reviewer", instructions="...", model=wrapped, tools=[...])
+
+        with wrapped:
+            result = Runner.run_sync(agent, input="Review PR #42")
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Inspect the step log">
+    The wrapper exposes its `SteeringSession`. Read `wrapped.session.step_log` after the run for per-step difficulty, FSM state, monitors fired, injection text, model id used, tokens, and latency.
+
+    ```python
+    for entry in wrapped.session.step_log:
+        print(entry.as_dict())
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Streaming via `stream_response` is currently a pass-through to the wrapped model — no steering is applied to streamed responses in the first cut. Non-streaming `get_response` calls run the full pipeline.
+</Note>
+
+## Path 2: telemetry-only with `rb.openai_hooks`
+
+Use this when you want dashboard rows but don't want the wrapper sitting in front of model calls.
+
+<Steps>
+  <Step title="Install">
     ```bash
     pip install reasonblocks openai-agents
     ```
   </Step>
 
   <Step title="Initialize ReasonBlocks">
-    Create a `ReasonBlocks` instance with your API key. This is the same initialization you use for any other framework integration.
-
     ```python
+    import os
     from reasonblocks import ReasonBlocks
 
-    rb = ReasonBlocks(api_key="rb_live_...")
+    rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
     ```
   </Step>
 
-  <Step title="Create hooks and run your agent">
-    Call `rb.openai_hooks()` to get a hooks object, then pass it to `Runner.run` via the `hooks=` keyword argument.
+  <Step title="Build hooks and run the agent">
+    `rb.openai_hooks(...)` returns a `ReasonBlocksHooks` instance — a `RunHooks` subclass that is also a sync and async context manager. Pass it to `Runner.run` (or `Runner.run_sync`).
 
-    ```python
-    import asyncio
-    from agents import Agent, Runner
+    <Tabs>
+      <Tab title="Async">
+        ```python
+        import asyncio
+        from agents import Agent, Runner
 
-    hooks = rb.openai_hooks(
-        run_id="my-run-1",
-        agent_name="reviewer",
-        task="review PR #42",
-    )
+        async def main():
+            agent = Agent(
+                name="reviewer",
+                instructions="You are a senior code reviewer.",
+                tools=[...],
+            )
 
-    agent = Agent(
-        name="reviewer",
-        instructions="You are a senior code reviewer. Review the PR and leave precise, actionable comments.",
-        tools=[...],
-    )
+            hooks = rb.openai_hooks(
+                run_id="pr-42",
+                agent_name="reviewer",
+                task="review PR #42",
+                model="gpt-4o",
+            )
 
-    result = asyncio.run(Runner.run(agent, input="Review PR #42", hooks=hooks))
-    ```
+            async with hooks:
+                result = await Runner.run(agent, input="Review PR #42", hooks=hooks)
 
-    For synchronous use, call `Runner.run_sync` instead:
+            return result
 
-    ```python
-    with hooks:
-        result = Runner.run_sync(agent, input="Review PR #42", hooks=hooks)
-    ```
+        asyncio.run(main())
+        ```
+      </Tab>
+      <Tab title="Sync">
+        ```python
+        from agents import Agent, Runner
+
+        agent = Agent(name="reviewer", instructions="...", tools=[...])
+
+        hooks = rb.openai_hooks(agent_name="reviewer", task="review PR #42")
+
+        with hooks:
+            result = Runner.run_sync(agent, input="Review PR #42", hooks=hooks)
+        ```
+      </Tab>
+    </Tabs>
   </Step>
 
   <Step title="Tag runs for the dashboard">
-    Pass the same identifying metadata you would pass to `rb.middleware()`. All parameters are optional.
+    `rb.openai_hooks(...)` accepts the same identifying fields as `rb.middleware()`.
 
     ```python
     hooks = rb.openai_hooks(
-        run_id="my-run-1",                          # auto-generated UUID if omitted
-        agent_name="pr-reviewer",                   # free-form filter key
-        task="review PR #42",                       # shown on the run row
-        framework="openai-agents",                  # default value
-        model="gpt-4o",                             # for display only
-        codebase_id="myrepo@sha:abc123",            # scopes E1 retrieval
-        org_id="6d3f...",                           # UUID; "default" if omitted
-        project_id="a91b...",                       # UUID; "default" if omitted
-    )
-    ```
-
-    Extra tags go in `metadata`:
-
-    ```python
-    hooks = rb.openai_hooks(
+        run_id="pr-42",                              # auto-generated if omitted
         agent_name="pr-reviewer",
+        task="review PR #42",
+        framework="openai-agents",                   # default
+        model="gpt-4o",
+        codebase_id="my-org/my-repo",
+        org_id="6d3f...",                            # "default" if omitted
+        project_id="a91b...",                        # "default" if omitted
         metadata={"pr_number": 42, "base_branch": "main"},
     )
     ```
   </Step>
 
-  <Step title="Track failures with the context manager">
-    The hooks object is both a sync and async context manager. Use it to ensure the run-finish telemetry event is flushed even when an exception escapes.
-
-    <Tabs>
-      <Tab title="Async">
-        ```python
-        async def run_agent(task: str):
-            hooks = rb.openai_hooks(agent_name="reviewer", task=task)
-
-            async with hooks:
-                result = await Runner.run(agent, input=task, hooks=hooks)
-
-            return result
-        ```
-      </Tab>
-      <Tab title="Sync">
-        ```python
-        def run_agent(task: str):
-            hooks = rb.openai_hooks(agent_name="reviewer", task=task)
-
-            with hooks:
-                result = Runner.run_sync(agent, input=task, hooks=hooks)
-
-            return result
-        ```
-      </Tab>
-    </Tabs>
-
-    When the agent completes but the outcome is still a failure, call `hooks.mark_failure` before the context manager exits:
+  <Step title="Track failures">
+    Exceptions that escape the `with`/`async with` block are recorded as `failure: <ExceptionType>`. To mark an explicit logical failure when the agent returns normally, call `hooks.mark_failure(reason=...)` before exit:
 
     ```python
     async with hooks:
@@ -116,59 +189,56 @@ ReasonBlocks integrates with the OpenAI Agents SDK through `RunHooks` — a call
         if not outcome_is_valid(result):
             hooks.mark_failure(reason="invalid_output")
     ```
-
-    For unhandled exceptions that propagate out of the `with` block, the context manager records `failure: <ExceptionType>` automatically — you don't need to call `mark_failure`.
   </Step>
 </Steps>
 
+## What gets captured
+
+The hooks subscribe to the openai-agents lifecycle:
+
+- **`on_agent_start`** emits `run_start` once.
+- **`on_llm_end`** accumulates input + output tokens from each LLM response.
+- **`on_tool_start`** stamps a per-tool start time.
+- **`on_tool_end`** emits a `step` event with the tool name, observation (truncated to 8000 chars), latency, and accumulated tokens. Tokens are attributed to the first tool call after each LLM response; subsequent calls in the same response stamp 0. The total across the run is exact.
+- **`on_agent_end`** emits `run_finish` with `outcome="success"` (overridable via `mark_failure`).
+- **`__exit__` / `__aexit__`** flushes a failure outcome if an exception escaped, then closes the emitter.
+
 ## Add CodebaseMemory tools
 
-`make_openai_tools` wraps a `CodebaseMemory` and optional `ImportGraph` into `function_tool`-decorated callables ready for `Agent(tools=[...])`.
+`make_openai_tools` returns `function_tool`-decorated callables ready for `Agent(tools=[...])`. Same contract as the LangChain factory — only the framework decoration differs.
 
 ```python
-from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks import CodebaseMemory, ImportGraph
 from reasonblocks.integrations.openai_agents import make_openai_tools
 
 memory = CodebaseMemory(
-    codebase_id="myrepo@sha:abc123",
-    api_key="rb_live_...",
+    codebase_id="my-org/my-repo",
+    api_key=os.environ["REASONBLOCKS_API_KEY"],
 )
+graph = ImportGraph().build_from_files({path: open(path).read() for path in py_files})
 
-rb_tools = make_openai_tools(memory)
+rb_tools = make_openai_tools(
+    memory,
+    graph,
+    recall_top_k=5,
+    recall_threshold=0.25,
+    enable_recall=True,
+    enable_store=True,
+    enable_impact=True,
+)
 
 agent = Agent(
     name="reviewer",
-    instructions="Review the PR thoroughly. Call recall_findings before reading files.",
+    instructions="Call recall_findings before reading any file.",
     tools=[*rb_tools, *your_tools],
 )
 ```
 
-This adds up to three tools to the agent:
-
-- **`recall_findings`** — semantic search over prior findings for the codebase
-- **`store_finding`** — persist a new finding for future runs
-- **`impact_analysis`** — blast-radius query via `ImportGraph` (only added when a graph is provided)
-
-To include `impact_analysis`, pass a built `ImportGraph`:
-
-```python
-from reasonblocks.import_graph import ImportGraph
-
-graph = ImportGraph()
-graph.build_from_files({path: source for path, source in py_files.items()})
-
-rb_tools = make_openai_tools(memory, graph)
-```
+The factory adds up to three tools: `recall_findings`, `store_finding`, and (when `graph` is provided) `impact_analysis`. See [CodebaseMemory](/guides/codebase-memory) for the storage API.
 
 <Note>
-  `ImportGraph.build_from_files` requires `networkx`. Install it with `pip install networkx`.
+  `ImportGraph.build_from_files` requires `networkx`. Install with `pip install networkx`.
 </Note>
-
-Disable individual tools for read-only agents:
-
-```python
-rb_tools = make_openai_tools(memory, enable_store=False)
-```
 
 ## Complete example
 
@@ -176,8 +246,7 @@ rb_tools = make_openai_tools(memory, enable_store=False)
 import asyncio
 import os
 from agents import Agent, Runner
-from reasonblocks import ReasonBlocks
-from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks import CodebaseMemory, ReasonBlocks
 from reasonblocks.integrations.openai_agents import make_openai_tools
 
 rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
@@ -193,7 +262,7 @@ agent = Agent(
     instructions=(
         "You are a senior code reviewer. "
         "Call recall_findings before reading any file. "
-        "After reviewing, store key findings for future runs."
+        "Store key findings before you finish."
     ),
     tools=[*rb_tools],
 )
@@ -203,6 +272,7 @@ async def main():
         agent_name="pr-reviewer",
         task="review PR #42",
         codebase_id="my-org/my-repo",
+        model="gpt-4o",
     )
 
     async with hooks:
@@ -218,5 +288,16 @@ asyncio.run(main())
 ```
 
 <Warning>
-  Each `hooks` object is single-use. Create a new one for each agent run by calling `rb.openai_hooks(...)` again.
+  Each `hooks` object — and each `wrapped` from `rb.openai_model(...)` — is single-use. Call the factory again for the next run.
 </Warning>
+
+## Which to pick
+
+| You want… | Use |
+|---|---|
+| Steering + dashboard rows | `rb.openai_model(...)` |
+| Dashboard rows only (no model wrapping) | `rb.openai_hooks(...)` |
+| Codebase memory tools (either path) | `make_openai_tools(memory, graph)` |
+| Model routing across FSM states | `rb.openai_model(model_factory=...)` |
+
+If you adopt `rb.openai_model`, you don't also need `rb.openai_hooks` — the wrapper emits the same `run_start` / `step` / `run_finish` telemetry from inside the steering pipeline.

@@ -1,146 +1,138 @@
 ---
-title: "Monitor weight profiles and customization"
-description: "Configure monitor weight profiles and per-monitor weights for coding, PR review, and QA use cases — with the default weights and fire threshold explained."
+title: "Monitor weights and profiles"
+description: "Local DEFAULT_WEIGHTS for the 6-monitor suite, and how server-side task profiles drive monitor steering."
 ---
 
-ReasonBlocks ships three built-in monitor weight profiles — `coding`, `pr_review`, and `qa` — that pre-tune which trajectory signals matter most for different kinds of agent work. You pick a profile via `monitor_task_profile`, and optionally override individual weights with `monitor_weights` if you need finer control.
+ReasonBlocks evaluates trajectory health through six heuristic monitors. The SDK ships local `DEFAULT_WEIGHTS` for `evaluate_all` and for `TokenSavingMiddleware`'s early-exit signals. Separately, `task_profile` (`"coding"` by default, with `"pr_review"` and `"qa"` available) is forwarded to `POST /monitors/evaluate`, where rb-api applies its own per-profile weight tables.
 
-## The six monitors and their default weights
+<Note>
+  The local `DEFAULT_WEIGHTS` in `reasonblocks.monitors.suite` and the server-side per-profile weights in rb-api are **separate**. The local weights drive `TokenSavingMiddleware`'s early-exit suite and any caller of `evaluate_all`. The server-side weights drive monitor steering injection through `MonitorSteeringInjection`.
+</Note>
 
-The monitor suite runs six heuristic detectors on every step. Each returns a score from `0.0` (healthy) to `1.0` (maximum badness). The weighted sum of all six scores forms the composite health signal that drives steering decisions.
+## The six monitors
 
-The default weights (`DEFAULT_WEIGHTS` from `monitors/suite.py`) are:
+Each monitor returns a score in `[0, 1]` where `1` is maximum badness. The weighted sum is the composite. Per-monitor fire threshold (default): `0.6`.
 
-| Monitor | Weight | What it detects |
-|---|---|---|
-| `streak` | `0.35` | Same action called consecutively — the strongest loop signal |
-| `call_count` | `0.15` | Total tool-call budget consumed as a fraction of the run limit |
-| `edit_revert` | `0.15` | Edit-fail-edit thrashing or content-similar reverts on the same file |
-| `test_repeat` | `0.15` | Same normalized test failure signature appearing repeatedly |
-| `diversity` | `0.10` | Collapsed tool exploration — last 5 calls use ≤2 distinct tools |
-| `hedge` | `0.10` | Rising hedging density or explicit retraction phrases in reasoning |
+| Monitor | What it detects |
+|---|---|
+| `streak` | Same action called consecutively (cap=5 returns 1.0) |
+| `call_count` | Total tool-call budget consumed (default budget=20) |
+| `edit_revert` | Edit-fail-edit thrashing or content-similar reverts on the same file |
+| `test_repeat` | Same normalized test-failure signature appearing two or more times in a row |
+| `diversity` | Last 5 calls use ≤2 distinct tools and the run has ≥8 calls (excluding healthy alternation) |
+| `hedge` | Hedge-density rising 2x+ between early/late halves, or any explicit retraction phrase |
 
-The `streak` monitor carries the most weight because repetitive identical actions are the most reliable indicator of a stuck agent. `call_count` and `edit_revert` share the second tier because budget overruns and file-level thrashing are common secondary symptoms.
+## Local DEFAULT_WEIGHTS
 
-## The fire threshold
+These are the weights baked into `reasonblocks.monitors.suite.DEFAULT_WEIGHTS`. They drive any direct call to `evaluate_all` and the `signals_fn=default_suite_signals` path used by `TokenSavingMiddleware`.
 
-A monitor is considered **fired** when its individual score is at or above `DEFAULT_FIRE_THRESHOLD = 0.6`. Fired monitors are listed in `step_log[n].monitors_fired` and reported in the dashboard. The composite score (the weighted sum of all six) is what determines whether the middleware injects steering guidance — the individual fire threshold is used for reporting and for gating E1 retrieval.
+| Monitor | Weight |
+|---|---|
+| `streak` | `0.35` |
+| `call_count` | `0.15` |
+| `edit_revert` | `0.15` |
+| `test_repeat` | `0.15` |
+| `diversity` | `0.10` |
+| `hedge` | `0.10` |
 
-## Built-in task profiles
+`streak` carries the highest weight because consecutive identical actions are the most reliable stuck-agent signal.
 
-You set the active profile with `monitor_task_profile` on the `ReasonBlocks` constructor or on `ReasonBlocksConfig`:
+```python
+from reasonblocks import DEFAULT_WEIGHTS, DEFAULT_FIRE_THRESHOLD, evaluate_all
+
+steps = [
+    {"step_index": 0, "action": "read_file", "thought": "Let me look", "observation": "..."},
+    {"step_index": 1, "action": "read_file", "thought": "Hmm, not sure", "observation": "..."},
+    {"step_index": 2, "action": "read_file", "thought": "Maybe I missed something", "observation": "..."},
+]
+
+result = evaluate_all(steps)
+print(result["scores"])    # per-monitor floats
+print(result["total"])     # weighted composite
+print(result["fired"])     # monitors >= DEFAULT_FIRE_THRESHOLD (0.6)
+print(result["weights"])   # weights actually used
+```
+
+To override locally, pass a `weights` dict — partial dicts merge over `DEFAULT_WEIGHTS`:
+
+```python
+result = evaluate_all(steps, weights={"streak": 0.5, "hedge": 0.05})
+```
+
+## Server-side task profiles
+
+`task_profile` is a string passed to `POST /monitors/evaluate`. rb-api looks up the profile's weight table and applies it to that evaluation. The SDK does not ship the per-profile weights — they live in rb-api.
 
 ```python
 from reasonblocks import ReasonBlocks
 
 rb = ReasonBlocks(
     api_key="rb_live_...",
-    task_profile="pr_review",  # or "coding", "qa"
+    task_profile="coding",   # or "pr_review", "qa"
 )
 ```
 
-The three built-in profiles shift weights away from detectors that produce false positives in their respective task context:
+Three profiles are defined in `rb-api/app/scoring/monitors.py` `WEIGHTS_BY_PROFILE`:
 
-| Monitor | `coding` (default) | `pr_review` | `qa` |
-|---|---|---|---|
-| `streak` | `0.35` | `0.35` | `0.35` |
-| `call_count` | `0.15` | `0.20` | `0.20` |
-| `edit_revert` | `0.15` | `0.05` | `0.05` |
-| `test_repeat` | `0.15` | `0.05` | `0.20` |
-| `diversity` | `0.10` | `0.20` | `0.10` |
-| `hedge` | `0.10` | `0.15` | `0.10` |
+### `coding` (default)
 
-**`coding`** is the default. It weights `edit_revert` and `test_repeat` equally with `call_count` because coding agents frequently edit files and run tests, and thrashing on either is a strong failure signal.
+Standard weights for an agent that edits code, runs tests, and may loop. Identical to the SDK's local `DEFAULT_WEIGHTS`.
 
-**`pr_review`** reduces `edit_revert` and `test_repeat` to near-zero because a PR review agent legitimately reads many files in sequence without calling test runners — those signals would fire constantly on healthy behavior. It raises `diversity` and `hedge` instead, because a reviewer that stops exploring new files or becomes uncertain is the failure shape to detect.
+| Monitor | Weight |
+|---|---|
+| `streak` | `0.35` |
+| `call_count` | `0.15` |
+| `edit_revert` | `0.15` |
+| `test_repeat` | `0.15` |
+| `diversity` | `0.10` |
+| `hedge` | `0.10` |
 
-**`qa`** raises `test_repeat` back up because QA agents genuinely run tests in tight loops, and repeated identical failures are the primary thing to catch. It also raises `call_count` because QA runs tend to be long.
+### `pr_review`
 
-## Overriding individual weights
+Read-only review agent. `edit_revert` and `test_repeat` are inapplicable (review agents legitimately read many files without writing or running tests), so their weight is redistributed onto `streak` and `diversity` — where review agents most often fail by re-explaining the same diff or sprawling across files.
 
-Use `monitor_weights` (on `ReasonBlocksConfig`) or pass a `weights` dict directly to `evaluate_all` when you want to nudge the profile without replacing it entirely. The dict is applied on top of the profile, so you only need to list the monitors you want to change.
+| Monitor | Weight |
+|---|---|
+| `streak` | `0.45` |
+| `call_count` | `0.15` |
+| `edit_revert` | `0.0` |
+| `test_repeat` | `0.0` |
+| `diversity` | `0.20` |
+| `hedge` | `0.20` |
 
-<Tabs>
-  <Tab title="Via ReasonBlocksConfig">
-    ```python
-    from reasonblocks import ReasonBlocksConfig, build_middleware
+### `qa`
 
-    config = ReasonBlocksConfig(
-        monitor_task_profile="coding",
-        monitor_weights={
-            "streak": 0.5,   # raise — you want earlier loop detection
-            "hedge": 0.05,   # lower — your agent hedges by design
-        },
-    )
-    ```
-  </Tab>
-  <Tab title="Via ReasonBlocks constructor">
-    ```python
-    # monitor_weights is only available through ReasonBlocksConfig + build_middleware.
-    # With the ReasonBlocks constructor, pick a profile and use monitor_weights
-    # through a config object.
-    from reasonblocks import ReasonBlocks, ReasonBlocksConfig, build_middleware
+QA / tutoring agent. `hedge` dominates (over-qualified answers are the primary failure mode); `call_count` matters less because QA agents make fewer tool calls overall.
 
-    config = ReasonBlocksConfig(
-        monitor_task_profile="pr_review",
-        monitor_weights={"diversity": 0.30},
-    )
-    ```
-  </Tab>
-</Tabs>
+| Monitor | Weight |
+|---|---|
+| `streak` | `0.30` |
+| `call_count` | `0.05` |
+| `edit_revert` | `0.05` |
+| `test_repeat` | `0.10` |
+| `diversity` | `0.15` |
+| `hedge` | `0.35` |
 
-<Note>
-  Unspecified monitor names fall through to the active profile. Unknown monitor names (ones the server does not recognize) are silently dropped. Negative weights are clamped to `0`.
-</Note>
+Resolution order on the server: defaults ← named profile preset ← per-call `monitor_weights` overrides. Unknown monitor names in overrides are dropped; negative weights are clamped to `0`.
 
-## Boosting streak sensitivity
+## Per-call monitor weights override
 
-The `streak` monitor fires at `1.0` when the same action is called five or more times in a row (`cap=5` in `score_streak`). If your agent legitimately calls a tool several times in succession during normal operation, you can reduce its weight rather than disable it entirely:
+Pass `monitor_weights` on `ReasonBlocksConfig` to override individual monitor weights on top of the chosen profile. The override is forwarded into `MonitorSteeringInjection` and rides on every `POST /monitors/evaluate` request.
 
 ```python
+from reasonblocks import ReasonBlocksConfig
+
 config = ReasonBlocksConfig(
+    monitor_task_profile="coding",
     monitor_weights={
-        "streak": 0.20,       # soften — your agent legitimately repeats read calls
-        "edit_revert": 0.30,  # compensate by raising the thrash detector
+        "streak": 0.5,    # raise — earlier loop detection
+        "hedge": 0.05,    # lower — your agent legitimately hedges
     },
 )
 ```
 
-## Reducing hedge sensitivity
+Partial dicts are fine — unspecified monitors fall through to the profile, then to server defaults. Unknown monitor names are dropped server-side; negative weights are clamped to `0`.
 
-The `hedge` monitor scores `1.0` on any explicit retraction phrase (`"I was wrong"`, `"never mind"`, `"disregard that"`) and scores by rising hedging density otherwise. If your agent frequently uses hedging language as a stylistic choice rather than as a sign of confusion, reduce the hedge weight:
-
-```python
-config = ReasonBlocksConfig(
-    monitor_weights={"hedge": 0.03},
-)
-```
-
-<Warning>
-  Weights are applied server-side. If you pass a `monitor_weights` dict to `ReasonBlocksConfig`, the values are forwarded to the ReasonBlocks API with each monitor evaluation request. Changes take effect immediately for the next run — there is no client-side caching of the weight vector.
-</Warning>
-
-## Evaluating the suite locally
-
-You can run the monitor suite directly against a step list without making any API calls — useful for debugging or unit testing:
-
-```python
-from reasonblocks.monitors.suite import evaluate_all, DEFAULT_WEIGHTS, DEFAULT_FIRE_THRESHOLD
-
-steps = [
-    {"step_index": 0, "action": "read_file", "thought": "Let me look at this", "observation": "..."},
-    {"step_index": 1, "action": "read_file", "thought": "Hmm, not sure", "observation": "..."},
-    {"step_index": 2, "action": "read_file", "thought": "Maybe I missed something", "observation": "..."},
-]
-
-result = evaluate_all(steps)
-print(result["scores"])   # {"streak": 0.6, "hedge": 0.4, ...}
-print(result["total"])    # weighted composite
-print(result["fired"])    # monitors at or above 0.6
-```
-
-The returned dict contains:
-- `scores` — per-monitor float scores in `[0, 1]`
-- `total` — weighted composite score
-- `fired` — list of monitor names whose score is at or above `DEFAULT_FIRE_THRESHOLD` (`0.6`)
-- `weights` — the weights that were actually used
+<Note>
+  `monitor_weights` is only a field on `ReasonBlocksConfig`. The simpler `ReasonBlocks(...)` constructor doesn't expose it — use the config + `build_middleware` path when you need per-call weight overrides.
+</Note>

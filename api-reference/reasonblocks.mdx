@@ -1,9 +1,9 @@
 ---
 title: "ReasonBlocks class reference"
-description: "Complete API reference for the ReasonBlocks class — constructor options, middleware(), openai_hooks(), and the score_step() heuristic scorer."
+description: "API reference for the ReasonBlocks class — constructor options, middleware(), openai_hooks(), and the score_step() heuristic scorer."
 ---
 
-`ReasonBlocks` is the main entry point for the SDK. You create one instance per process, passing your API key and any global configuration, then call `middleware()` or `openai_hooks()` once per agent run to get a fresh, run-scoped middleware object.
+`ReasonBlocks` is the main entry point for the SDK. Create one instance per process, passing your API key and any global configuration, then call `middleware()` or `openai_hooks()` once per agent run to get a fresh, run-scoped object.
 
 ## Constructor
 
@@ -18,7 +18,7 @@ rb = ReasonBlocks(
 ```
 
 <ParamField path="api_key" type="string" required>
-  Your ReasonBlocks API key. Keys that start with `rb_live_` are production keys bound to a specific org; test keys start with `rb_test_`. When you use a per-customer live key, the server overrides `org_id` and `project_id` with the key's authoritative scope automatically.
+  Your ReasonBlocks API key. Production keys start with `rb_live_`; test keys with `rb_test_`. When you use a per-customer live key, the server overrides `org_id` and `project_id` with the key's authoritative scope automatically.
 </ParamField>
 
 <ParamField path="base_url" type="string">
@@ -26,35 +26,31 @@ rb = ReasonBlocks(
 </ParamField>
 
 <ParamField path="token_budget" type="integer">
-  Soft cap on tokens tracked by the trace state manager. When the budget is exceeded, the middleware signals the agent to wrap up. Leave unset to run without a budget cap.
-</ParamField>
-
-<ParamField path="monitor_names" type="string[]">
-  Allowlist of monitor names to enable. When omitted, all built-in monitors run. Pass a list such as `["streak", "hedge", "diversity"]` to run a subset.
+  Soft cap on tokens tracked by the trace state manager. Stored on `TraceState.token_budget` and used by downstream consumers that surface budget pressure. Leave unset to run without a cap.
 </ParamField>
 
 <ParamField path="fsm_thresholds" type="object">
-  Override the difficulty FSM's state-transition thresholds. Keys are threshold names; values are floats between 0 and 1. Leave unset to use the SDK defaults.
+  Override the difficulty FSM's transition thresholds. Forwarded as kwargs to `DifficultyFSM`; recognized keys include `fast_threshold`, `slow_threshold`, `skip_threshold`, `hysteresis_margin`, `fast_window`, `slow_window`, `skip_window`. Leave unset to use the defaults.
 </ParamField>
 
 <ParamField path="model_routing" type="object">
-  Map FSM state names to model identifiers. For example, `{"FAST": "claude-haiku-4-5", "SLOW": "claude-opus-4-5"}` routes easy steps to a cheaper model and hard steps to a more capable one.
+  Map FSM state names to model identifiers, e.g. `{"FAST": "anthropic:claude-haiku-4-5-20251001", "SLOW": "anthropic:claude-sonnet-4-20250514"}`. The middleware swaps the model on the next call when the FSM enters that state.
 </ParamField>
 
 <ParamField path="e_traces_enabled" type="boolean" default="True">
-  Whether to retrieve and inject E-traces from the pattern store. Set to `False` to disable E-trace injection entirely, for example in local development or CI environments without API access.
+  Whether to retrieve and inject E-trace patterns from the server. Set to `False` to skip the retrieval round-trip — useful in local development or CI environments without rb-api access.
 </ParamField>
 
 <ParamField path="customer_id" type="string">
-  Opaque customer identifier attached to every run. Useful when you're building a multi-tenant product on top of ReasonBlocks and need to associate runs with your own customer records.
+  Per-customer identifier sent with E1 (instance-level) retrieval queries. The server scopes the Qdrant lookup to traces tagged with this `customer_id`, so prior runs within the same customer can be matched while runs from other customers stay isolated.
 </ParamField>
 
 <ParamField path="live_streaming_enabled" type="boolean" default="True">
-  Whether to stream per-step telemetry events to the dashboard as the agent runs. Disable this for fully offline or air-gapped deployments; data is not sent until live streaming is re-enabled.
+  Whether to stream `run_start`, per-step, and `run_finish` events to rb-api as the agent runs. Disable for fully offline or air-gapped deployments. When `False`, no `MonitorClient` or `StreamingEmitter` is constructed and the dashboard will not see this run.
 </ParamField>
 
 <ParamField path="task_profile" type="string" default='"coding"'>
-  Selects the monitor weight vector on the server. Built-in profiles are `"coding"` (the default) and `"pr_review"` (which de-weights edit-revert and test-repeat monitors). The profile is stored on every run row and affects how the dashboard scores trajectories.
+  Selects the monitor weight vector on the server. Built-in profiles are `"coding"` (the default), `"pr_review"` (drops `edit_revert` and `test_repeat` to 0 and redistributes onto `streak`, `diversity`, `hedge`), and `"qa"` (boosts `hedge` to dominate; drops `call_count` and `edit_revert`). See [Monitor weights and profiles](/configuration/monitor-profiles) for the per-profile weight tables. The profile is stamped on every `run_start` event and persisted on the run row.
 </ParamField>
 
 ---
@@ -65,83 +61,210 @@ Creates a fresh `ReasonBlocksMiddleware` instance scoped to a single agent run. 
 
 <CodeGroup>
 
-```python LangChain
+```python LangChain 1.0
+from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
 from reasonblocks import ReasonBlocks
 
 rb = ReasonBlocks(api_key="rb_live_...")
 
-mw = rb.middleware(
+with rb.middleware(
     run_id="run-abc-123",
     agent_name="pr-reviewer",
     task="Review PR #42 for correctness",
     framework="langchain",
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-4-20250514",
     codebase_id="myorg_myrepo",
-    org_id="myorg",
-    project_id="code-review",
     metadata={"pr_number": 42, "experiment": "v2"},
-)
-
-agent = create_react_agent(model=..., tools=..., middleware=[mw])
+) as mw:
+    agent = create_agent(
+        model=ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=2048),
+        tools=[...],
+        system_prompt="...",
+        middleware=[mw],
+    )
+    result = agent.invoke({"messages": [("user", "Review PR #42")]})
 ```
 
-```python With context manager
-rb = ReasonBlocks(api_key="rb_live_...")
-
+```python Marking failure explicitly
 with rb.middleware(agent_name="summarizer", task="Summarize issue #7") as mw:
-    agent = create_react_agent(model=..., tools=..., middleware=[mw])
-    result = agent.invoke({"messages": [HumanMessage(content="...")]})
+    try:
+        result = agent.invoke({"messages": [("user", "...")]})
+    except RecursionError:
+        mw.mark_failure(reason="recursion_limit")
+        raise
 ```
 
 </CodeGroup>
 
 <ParamField path="run_id" type="string">
-  Unique identifier for this run. When omitted, the SDK generates a UUID automatically. Use your own ID when you want to correlate the dashboard row with an ID from your own system (e.g., a CI job ID or a PR number).
+  Unique identifier for this run. When omitted, the SDK generates one from the trace state manager. Provide your own when you want to correlate the dashboard row with an external ID (CI job, PR number, etc.).
 </ParamField>
 
 <ParamField path="agent_name" type="string" default='""'>
-  Human-readable name for the agent. Displayed in the dashboard run list. Examples: `"pr-reviewer"`, `"test-writer"`.
+  Human-readable name for the agent. Displayed in the dashboard run list.
 </ParamField>
 
 <ParamField path="task" type="string" default='""'>
-  Short description of what this run is trying to accomplish. Stored on the run row and shown in the dashboard. Examples: `"Review PR #42"`, `"Fix TypeError in auth module"`.
+  Short description of what this run is trying to accomplish. Stored on the run row.
 </ParamField>
 
 <ParamField path="framework" type="string" default='"langchain"'>
-  The agent framework in use. Stored for diagnostic purposes. Examples: `"langchain"`, `"langgraph"`, `"custom"`.
+  Agent framework identifier. Stored for diagnostic filtering.
 </ParamField>
 
 <ParamField path="model" type="string" default='""'>
-  The model identifier used by the agent. Stored on the run row. Examples: `"claude-sonnet-4-5"`, `"gpt-4o"`.
+  Model identifier used by the agent. Stored on the run row.
 </ParamField>
 
 <ParamField path="codebase_id" type="string" default='""'>
-  Associates this run with a specific codebase in the findings store. Use the same value you pass to `CodebaseMemory` so the dashboard can link runs to their codebase context.
+  Associates this run with a specific codebase in the findings store. Use the same value you pass to `CodebaseMemory`.
 </ParamField>
 
 <ParamField path="org_id" type="string" default='"default"'>
-  Multi-tenant organization scope. Defaults to `"default"`. When your `api_key` is a per-customer live key, the server overrides this with the key's authoritative org — most callers can leave it at the default.
+  Multi-tenant organization scope. When the api_key is a per-customer live key, rb-api overrides this with the key's authoritative org.
 </ParamField>
 
 <ParamField path="project_id" type="string" default='"default"'>
-  Multi-tenant project scope within `org_id`. Defaults to `"default"`. Same override behavior as `org_id` applies.
+  Multi-tenant project scope within `org_id`. Same override behavior as `org_id`.
 </ParamField>
 
 <ParamField path="metadata" type="object">
-  Free-form key–value tags attached to the run row and surfaced as JSON in the dashboard. Use this for anything that doesn't fit the named fields above — PR numbers, A/B group assignments, experiment variants, etc.
+  Free-form key–value tags attached to the run row and surfaced as JSON in the dashboard.
 </ParamField>
 
-**Returns** `ReasonBlocksMiddleware` — a context manager that flushes the telemetry emitter on exit and records a failure outcome if an exception escapes.
+### Returns
+
+<ResponseField name="ReasonBlocksMiddleware" type="middleware">
+  A LangChain `AgentMiddleware` subclass. Also a context manager (`with rb.middleware(...) as mw:`) that emits `run_finish` and closes the streaming emitter on exit. Inside an `__exit__` an exception sets the outcome to `failure: <ExceptionName>`; a clean exit defaults to `success`. Call `mw.mark_failure(reason="...")` before the context exits to override the default. Call `mw.close(timeout=5.0)` to drain the emitter explicitly outside a `with` block.
+</ResponseField>
+
+---
+
+## `claude_messages_session()`
+
+Builds a [`SteeringSession`](/api-reference/steering-session) wired for the Anthropic Messages API loop. Pair with [`run_messages_agent_loop(..., session=session)`](/api-reference/integrations/claude-tools#run_messages_agent_loop) to run the full pipeline at every turn.
+
+```python
+from anthropic import Anthropic
+from reasonblocks import ReasonBlocks
+from reasonblocks.integrations.claude_tools import (
+    make_claude_tools, run_messages_agent_loop,
+)
+
+rb = ReasonBlocks(api_key="rb_live_...")
+client = Anthropic()
+tool_specs, dispatch = make_claude_tools(memory)
+
+with rb.claude_messages_session(
+    agent_name="reviewer", task="review PR #42",
+    model="claude-haiku-4-5-20251001",
+) as session:
+    outcome = run_messages_agent_loop(
+        client,
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "..."}],
+        tool_specs=tool_specs, dispatch=dispatch,
+        session=session,
+    )
+```
+
+Same parameters as `middleware()` (`run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `metadata`). `framework` defaults to `"claude-messages"`.
+
+### Returns
+
+<ResponseField name="SteeringSession">
+  A `SteeringSession` instance — the framework-agnostic core. See the [SteeringSession reference](/api-reference/steering-session) for its full API. Sync + async context manager; emits `run_start` on enter, `run_finish` on exit (with the same outcome semantics as `middleware()`).
+</ResponseField>
+
+---
+
+## `openai_model()`
+
+Wraps an `openai-agents` `Model` so the steering pipeline runs before each `get_response` call. This is the parity path with `middleware()` for the OpenAI Agents SDK — FSM scoring, server-side monitor evaluation, E1 / E2 / E3 injection, and (with a `model_factory`) model routing all run.
+
+```python
+from agents import Agent, Runner, OpenAIChatCompletionsModel
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...", model_routing={
+    "FAST": "gpt-4o-mini",
+    "SLOW": "gpt-4o",
+})
+
+wrapped = rb.openai_model(
+    default_model=OpenAIChatCompletionsModel("gpt-4o"),
+    model_factory=lambda mid: OpenAIChatCompletionsModel(mid),
+    agent_name="reviewer",
+    task="describe what this run is doing",
+)
+
+agent = Agent(name="reviewer", instructions="...", model=wrapped, tools=[...])
+
+with wrapped:
+    await Runner.run(agent, input="...")
+```
+
+<ParamField path="default_model" type="Model" required>
+  Any object satisfying the `openai-agents` `Model` protocol — typically `OpenAIChatCompletionsModel` or `OpenAIResponsesModel`.
+</ParamField>
+
+<ParamField path="model_factory" type="Callable[[str], Model]" default="None">
+  Optional callable that builds alternate `Model` instances on demand when `model_routing` on the client maps the current FSM state to a different identifier. Without a factory, routing overrides log on the step entry but the wrapped default model is still used.
+</ParamField>
+
+The remaining keyword arguments mirror `middleware()` (`run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `metadata`). `framework` defaults to `"openai-agents"`.
+
+### Returns
+
+<ResponseField name="ReasonBlocksModel">
+  A Model-compatible wrapper that is also a sync + async context manager. Use as the `model` field on an `Agent`. The underlying `SteeringSession` is exposed via `wrapped.session` for inspecting `step_log` / calling `mark_failure`.
+</ResponseField>
+
+<Note>
+  Streaming via `stream_response` is currently a pass-through to the wrapped model. Non-streaming `get_response` calls run the full pipeline.
+</Note>
+
+---
+
+## `claude_agent_telemetry()`
+
+Builds a telemetry-only adapter for the `claude-agent-sdk` `query()` stream. The Claude Agent SDK runs the agent loop inside the Claude Code CLI process, so the steering pipeline cannot inject — this adapter parses the message stream for `tool_use` / `tool_result` blocks and emits `run_start` / per-tool `step` / `run_finish` events to the dashboard.
+
+```python
+from claude_agent_sdk import query
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+async with rb.claude_agent_telemetry(
+    agent_name="reviewer", task="...", model="claude-haiku-4-5",
+) as tele:
+    async for msg in tele.wrap(query(prompt="...", options={"tools": tools})):
+        ...
+```
+
+Parameters mirror `middleware()`. `framework` defaults to `"claude-agent-sdk"`.
+
+### Returns
+
+<ResponseField name="ClaudeAgentTelemetry">
+  Sync + async context manager exposing `wrap(async_iter)` to drive an async query stream, plus `mark_failure(reason=...)` / `close(timeout=...)`. No FSM, no monitor evaluation, no E-trace retrieval — purely an observer.
+</ResponseField>
 
 ---
 
 ## `openai_hooks()`
 
-Builds a `RunHooks` adapter for the `openai-agents` SDK. This is the drop-in equivalent of `middleware()` for agents built with `openai-agents`'s `Runner.run()` API. It produces the same dashboard rows and telemetry as `middleware()`.
+Builds a `RunHooks` adapter for the `openai-agents` SDK. Telemetry-only — emits the same `run_start` / `step` / `run_finish` events as the steering integrations, but does **not** run scoring, monitors, or injection. Use this when you want dashboard rows but don't want a `Model` wrapper sitting in front of model calls; use [`openai_model()`](#openai_model) for the full pipeline.
+
+<Note>
+  If you adopt `openai_model`, you don't also need `openai_hooks` — the wrapper emits the same telemetry from inside the steering pipeline.
+</Note>
 
 <CodeGroup>
 
-```python Basic usage
+```python Sync
 from agents import Agent, Runner
 from reasonblocks import ReasonBlocks
 
@@ -175,75 +298,43 @@ async def main():
 </CodeGroup>
 
 <Note>
-  `openai_hooks()` accepts the same parameters as `middleware()`. The only behavioral difference is the `framework` default, which is `"openai-agents"` instead of `"langchain"`.
+  `openai_hooks()` accepts the same keyword parameters as `middleware()`. The only behavioral difference is that `framework` defaults to `"openai-agents"` instead of `"langchain"`.
 </Note>
 
-<ParamField path="run_id" type="string">
-  Unique identifier for this run. Auto-generated as a UUID hex string when omitted.
-</ParamField>
+### Returns
 
-<ParamField path="agent_name" type="string" default='""'>
-  Human-readable name for the agent. Stored on the run row.
-</ParamField>
-
-<ParamField path="task" type="string" default='""'>
-  Short description of what this run is trying to accomplish.
-</ParamField>
-
-<ParamField path="framework" type="string" default='"openai-agents"'>
-  Agent framework identifier. Defaults to `"openai-agents"` for this method.
-</ParamField>
-
-<ParamField path="model" type="string" default='""'>
-  Model identifier used by the agent.
-</ParamField>
-
-<ParamField path="codebase_id" type="string" default='""'>
-  Codebase identifier to associate with this run.
-</ParamField>
-
-<ParamField path="org_id" type="string" default='"default"'>
-  Multi-tenant organization scope.
-</ParamField>
-
-<ParamField path="project_id" type="string" default='"default"'>
-  Multi-tenant project scope within `org_id`.
-</ParamField>
-
-<ParamField path="metadata" type="object">
-  Free-form key–value tags attached to the run row.
-</ParamField>
-
-**Returns** a `RunHooks`-compatible context manager (sync and async).
+<ResponseField name="RunHooks" type="hooks">
+  A `RunHooks`-compatible object that is also a sync + async context manager. Exposes `mark_failure(reason=...)` and `close(timeout=...)` with the same semantics as the LangChain middleware. The hooks emit `run_start` on `on_agent_start`, a per-tool step event on `on_tool_end`, and `run_finish` on `on_agent_end` (or via `__exit__` when an exception escapes).
+</ResponseField>
 
 ---
 
 ## `score_step()`
 
-A static heuristic method that scores a single agent step text on a 0–1 difficulty scale. Higher scores indicate harder, more complex reasoning steps.
-
-<Note>
-  This is a heuristic baseline scorer. You can call it directly for debugging or unit testing, but it runs automatically inside `middleware()` — you do not need to wire it up yourself.
-</Note>
+`@staticmethod`. Heuristic difficulty scorer for a single step's text. The middleware uses this internally; you can call it directly for debugging or testing.
 
 ```python
-score = ReasonBlocks.score_step("I'm not sure — this could be a ValidationError or a TypeError")
+score = ReasonBlocks.score_step(
+    "I'm not sure — this could be a ValidationError or a TypeError"
+)
 print(score)  # e.g. 0.73
 ```
 
 <ParamField path="text" type="string" required>
-  The agent step text to score. Typically the LLM's reasoning text or tool observation for one step. An empty string returns `0.5`.
+  The agent step text to score. An empty string returns `0.5`.
 </ParamField>
 
-**Returns** `float` — a value between 0 and 1.
+<ResponseField name="score" type="float">
+  A value between 0 and 1. Higher scores mean the step looks harder — more hedging, longer text, more error language, more entities.
+</ResponseField>
 
-The score is a weighted combination of four signals:
+The score is a weighted combination of four signals, passed through a sigmoid centered at `raw=0.5`:
 
 | Signal | Weight | Description |
 |--------|--------|-------------|
-| Hedging density | 30% | Frequency of uncertainty words such as "maybe", "not sure", "hmm" |
-| Length | 25% | Longer steps tend to indicate harder reasoning (caps at 500 words) |
-| Error language | 25% | Frequency of words like "error", "exception", "traceback" |
-| Entity density | 20% | Count of file paths, dotted identifiers, and quoted strings |
+| Hedging density | 0.30 | Frequency of uncertainty words such as `"maybe"`, `"not sure"`, `"hmm"`, `"reconsider"` |
+| Length | 0.25 | Word count, capped at 500 |
+| Error language | 0.25 | Frequency of words like `"error"`, `"exception"`, `"traceback"`, `"failed"` |
+| Entity density | 0.20 | Count of file paths, dotted identifiers, and quoted strings (capped at 10) |
 
-The combined raw score is passed through a sigmoid-like squash to keep the output in a usable range.
+The raw weighted sum is mapped via `1 / (1 + exp(-6 * (raw - 0.5)))` to keep the output in a usable range.

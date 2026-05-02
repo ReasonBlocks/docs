@@ -1,95 +1,100 @@
 ---
-title: "E-trace steering injection explained"
-description: "How ReasonBlocks injects instance-level, pattern-level, and universal guidance into your agent via E1, E2, and E3 traces appended to the system message."
+title: "E-traces"
+description: "The three tiers of steering injection — E1 instance-level, E2 failure-mode patterns, E3 universal rules — how each tier is gated, and how their text reaches the system message."
 ---
 
-E-traces are the steering mechanism ReasonBlocks uses to guide your agent away from failure modes. When the health monitors detect trouble — or when the agent is on its first call — ReasonBlocks retrieves relevant guidance from the ReasonBlocks API and appends it to the system message. The agent reads that guidance as part of its context and adjusts its behavior without any change to the conversation history.
-
-There are three tiers, each operating at a different scope and with different retrieval logic. Understanding which tier fires when helps you reason about what guidance your agent is receiving at any given step.
+E-traces are the patterns ReasonBlocks pulls from the rb-api pattern store and appends to the system message as steering. There are three tiers, each with its own scope, retrieval logic, and per-run cap. Understanding which tier fires when explains exactly what guidance your agent is receiving on any given step.
 
 ## The three tiers
 
 <Tabs>
   <Tab title="E1 — Instance-level">
-    **E1 patterns are customer-scoped, retrieved by semantic similarity, and gated behind the health monitors.**
+    **Customer-scoped patterns retrieved by semantic similarity, gated by monitor signal, capped at one firing per run.**
 
-    E1 retrieves the single most similar pattern (`top_k=1`) from your organization's pattern library. The similarity threshold enforced by the API is **0.8** — only a very close match triggers an injection. Because E1 queries involve a vector search, it is only invoked when the session shows signs of trouble.
+    `E1Injection` builds its query from the last **3** thoughts in the trace and asks rb-api for `level="e1"`, `top_k=1`, scoped to `customer_id` if one was passed to the `ReasonBlocks` constructor. Server-side, rb-api enforces the E1 similarity threshold (0.8) plus any per-pattern `gate_threshold`; these gates are not client-tunable.
 
-    **E1 fires when any of the following is true:**
-    - At least one monitor has fired on the current step (score ≥ 0.6).
-    - The composite monitor score on the current step exceeds **0.15**.
-    - At least one monitor fired on either of the two previous steps in the session.
+    Client-side, E1 retrieval is gated by recent monitor history. The query is **only** issued when:
 
-    If no monitors have ever been configured, E1 is allowed to fire unconditionally, preserving backward compatibility.
+    ```
+    current_eval.fired is non-empty
+    OR current_eval.composite > 0.15
+    OR any monitor fired on either of the previous 2 steps
+    ```
 
-    E1 never fires more than once per run by default (`max_calls=1`). This prevents repeated injection of the same instance-level guidance once it has been delivered.
+    If no monitor has ever run in this session (no `MonitorSteeringInjection` configured), E1 is allowed unconditionally for backward compatibility.
+
+    `max_calls=1` means E1 fires at most once per run, regardless of how many subsequent steps satisfy the gate.
 
     <Note>
-      E1 is completely skipped — no query is issued — when the FSM is in `FAST` state. When the agent is sailing through easy steps, instance-level guidance would add latency without benefit.
+      `FAST` state skips the full E-trace pipeline, so E1 is also skipped while the agent is sailing through easy steps.
     </Note>
   </Tab>
 
   <Tab title="E2 — Pattern-level">
-    **E2 patterns cover common agent failure modes and are retrieved based on the current failure classification.**
+    **Failure-mode patterns retrieved from the shared library, narrowed by monitor-derived `failure_type` when available, capped at one firing per run.**
 
-    E2 retrieves up to **two** patterns (`top_k=2`) from the shared pattern library. When the health monitors have produced a `failure_type` classification (such as a loop or thrashing category), E2 narrows its metadata filter to that failure family so the results are more targeted.
+    `E2Injection` builds its query from the last **5** thoughts in the trace and asks rb-api for `level="e2"`, `top_k=2`. When the most recent monitor evaluation produced a `failure_type` classification (loop, thrashing, etc.), the middleware threads it into E2's metadata filter so retrieval narrows to the same failure family. Server-side, rb-api enforces the E2 similarity threshold (0.7) plus any per-pattern `gate_threshold`.
 
-    E2 fires on scored steps when the E-trace pipeline is not bypassed (i.e., not in `FAST` state). It also fires at most once per run (`max_calls=1`).
-
-    The query context is built from the last five steps' thoughts, giving E2 a broader view of the recent trajectory than E1's three-step window.
+    E2 fires on scored steps when the E-trace pipeline is not bypassed (i.e., not in `FAST` state). `max_calls=1` means E2 fires at most once per run.
   </Tab>
 
   <Tab title="E3 — Universal rules">
-    **E3 patterns are universal standing rules that apply to every agent run. They fire exactly once: on the very first call.**
+    **Universal standing rules with no similarity query, broadcast once on the first call.**
 
-    E3 fetches every available universal pattern (up to 32) without a similarity query or gate. There is no threshold, no monitor requirement, and no FSM condition — E3 always fires on step zero, regardless of what the agent has done.
+    `E3Injection` is gated to the very first model call in a run. It calls rb-api with `level="e3"`, `top_k=32`, no context string, no failure-type filter. There is no similarity gate — every available E3 pattern up to the cap is returned and queued for the upcoming model call.
 
-    Because E3 fires only once and its content does not change between steps, it is well suited for baseline behavioral rules: formatting conventions, tool usage guidance, and other invariants that should hold throughout the run.
+    After that single broadcast, `E3Injection` short-circuits on every subsequent call. It is not "skipped in `FAST`" — it is single-shot regardless of state.
 
-    E3 patterns are rendered using the final post-routing model identifier so the format can be adapted to the model family that will actually receive them.
+    Patterns are rendered using the final post-routing model identifier so the format can be adapted to the model family that will actually receive them.
   </Tab>
 </Tabs>
 
+## Summary
+
+| Tier | Scope | Top-k | Server-side similarity gate | Per-run cap | Fires when |
+|---|---|---|---|---|---|
+| E1 | Instance (customer-scoped) | 1 | 0.8 | 1 | Monitor fired, composite > 0.15, or fired in last 2 steps. Never in `FAST`. |
+| E2 | Failure-mode (shared) | 2 | 0.7 | 1 | Any scored step outside `FAST`. Narrowed by `failure_type`. |
+| E3 | Universal | 32 | none | 1 | First call only. |
+
 ## How injections reach the system message
 
-All retrieved patterns are assembled and appended to the system message as a single block:
+Pending injections are rendered and joined with blank lines, then appended to the system message as a separate content block:
 
 ```
 [REASONBLOCKS]
 <rendered guidance text>
 ```
 
-This block is a separate content block from your base system prompt, which means it can be cached independently. ReasonBlocks marks the base system prompt with an Anthropic `cache_control: ephemeral` marker so it hits the prompt cache on every step. The `[REASONBLOCKS]` block rides uncached — its content varies per step, so it must never bust the base prompt's cache key.
+The base system prompt is wrapped in its own content block with `cache_control: {"type": "ephemeral"}` so Anthropic's prompt cache hits across every step. The `[REASONBLOCKS]` trailer rides uncached so its varying content does not bust the base cache key.
 
 <Note>
-  The `cache_control` marker is a no-op on non-Anthropic providers. It is safe to use ReasonBlocks with OpenAI or Gemini models; the marker is simply ignored.
+  `cache_control` is ignored by non-Anthropic providers — safe no-op on OpenAI or Gemini models.
 </Note>
 
-On steps where no injections are warranted (for example, a `FAST`-state step), the `[REASONBLOCKS]` block is omitted entirely. The base system prompt is still wrapped with `cache_control` unconditionally so every step benefits from cache hits.
+On steps where nothing fires (a `FAST`-state step with no pending injections), the `[REASONBLOCKS]` block is omitted entirely. The base system prompt is still wrapped with `cache_control` unconditionally so every step benefits from cache hits.
 
-## The E1 gate in detail
+## The E1 retrieval gate, in detail
 
-The E1 gate exists to avoid issuing vector search queries on every step of a healthy run. Pattern retrieval adds latency, and most steps in a well-functioning agent do not need instance-level steering.
+The gate exists to keep vector search off of healthy steps. Pattern retrieval adds latency, and most steps in a well-functioning agent do not need instance-level steering.
 
-The gate uses a lookback window of **two prior steps** in addition to the current step's signal:
+The two-step lookback ensures continuity: a single monitor firing keeps the gate open for the next two steps even if the score dips briefly. The check uses the last entry in `_monitor_eval_history` (the current call) plus the two prior entries:
 
 ```
 allow E1 if:
   current_eval.fired is non-empty
   OR current_eval.composite > 0.15
-  OR any monitor fired on the previous 2 steps
+  OR any monitor fired on either of the previous 2 steps
 ```
 
-This means a single monitor firing opens the E1 gate for the next two steps, ensuring continuity of guidance even if the monitor score dips briefly.
-
 <Warning>
-  If you disable monitors entirely, E1 falls back to firing unconditionally on every eligible step. Consider this tradeoff when deciding whether to include monitors in your configuration.
+  The 0.15 threshold is the only client-tunable value in this gate, and it is currently a private attribute (`_e1_gate_composite_threshold`) on the middleware. The 0.8 (E1) and 0.7 (E2) similarity thresholds are enforced server-side and are not exposed as SDK parameters.
 </Warning>
 
-## Summary
+## What you can configure today
 
-| Tier | Scope          | Retrieval        | Top-k | Similarity gate | Fires when                              |
-|------|----------------|------------------|-------|-----------------|-----------------------------------------|
-| E1   | Instance       | Vector search    | 1     | 0.8             | Monitor fired or composite score > 0.15 |
-| E2   | Pattern shared | Vector search    | 2     | 0.7 (API-side)  | Any scored step (not FAST)              |
-| E3   | Universal      | Scroll-all       | 32    | None            | First call only                         |
+- Disable all E-traces via `e_traces_enabled=False` on the constructor. E1, E2, and E3 are then never registered; the monitor steering injection still runs.
+- Scope E1 retrieval to a customer via `customer_id="..."` on the constructor.
+- Influence E2's metadata filter by the monitor-derived `failure_type`. This happens automatically when `MonitorSteeringInjection` returns a classification.
+
+There is currently no public knob to change the E1 gate threshold, the E1/E2/E3 `max_calls`, or the server-side similarity thresholds. {/* TODO: verify whether SDK plans to expose these as constructor kwargs in a future release */}

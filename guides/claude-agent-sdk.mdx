@@ -1,0 +1,172 @@
+---
+title: "Claude Agent SDK"
+description: "Wire ReasonBlocks codebase memory tools into a Claude Agent SDK / Claude Code agent loop."
+---
+
+ReasonBlocks integrates with the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) through the `make_claude_agent_sdk_tools` factory. The Claude Agent SDK runs the agent loop *inside the Claude Code CLI*, so the per-step LangChain middleware (FSM scoring, monitor steering, E-trace injection, model routing) does not apply on this path. What you get is the codebase memory layer — `recall_findings`, `store_finding`, and an optional `impact_analysis` — registered as Claude Agent SDK tools.
+
+For a Claude Messages API integration with a hand-rolled agent loop (where ReasonBlocks ships a turn-by-turn driver too), see the [Claude tools reference](/api-reference/integrations/claude-tools).
+
+## Prerequisites
+
+- Python 3.10+
+- `pip install reasonblocks claude-agent-sdk`
+- A working `claude` CLI installation (Claude Code)
+- `ANTHROPIC_API_KEY` set in the environment
+- A reachable rb-api endpoint (default `https://rb-api.reasonblocks.com`; set `REASONBLOCKS_BASE_URL` to point elsewhere)
+
+## Walkthrough
+
+<Steps>
+  <Step title="Create a CodebaseMemory client">
+    `CodebaseMemory` is the per-repo findings store. Pick a stable `codebase_id` for your repository (commit-pinned or branch-pinned, depending on your invalidation strategy).
+
+    ```python
+    import os
+    from reasonblocks import CodebaseMemory
+
+    memory = CodebaseMemory(
+        codebase_id="myrepo@main",
+        api_key=os.environ["REASONBLOCKS_API_KEY"],
+        base_url=os.environ.get("REASONBLOCKS_BASE_URL"),  # omit for the hosted API
+    )
+    ```
+  </Step>
+
+  <Step title="Build the tool list">
+    `make_claude_agent_sdk_tools` returns a list of `@tool`-decorated async callables ready to pass to `claude_agent_sdk.query`.
+
+    ```python
+    from reasonblocks.integrations.claude_tools import make_claude_agent_sdk_tools
+
+    tools = make_claude_agent_sdk_tools(memory)
+    # By default: recall_findings + store_finding (no graph, no impact_analysis).
+    # Pass enable_store=False if you want a recall-only agent.
+    ```
+
+    Pass an `ImportGraph` to add `impact_analysis`:
+
+    ```python
+    from reasonblocks import ImportGraph
+
+    graph = ImportGraph().build_from_files(files_dict)
+    tools = make_claude_agent_sdk_tools(memory, graph)
+    ```
+  </Step>
+
+  <Step title="Run a query">
+    Pass the tools through the `options` dict on `claude_agent_sdk.query`. The agent loop runs inside Claude Code.
+
+    ```python
+    import asyncio
+    from claude_agent_sdk import query
+
+    async def main():
+        async for message in query(
+            prompt=(
+                "Use recall_findings to figure out what's wrong with "
+                "MarkerWidget. Then summarize what you learned in one paragraph."
+            ),
+            options={
+                "tools": tools,
+                "model": "claude-haiku-4-5",
+            },
+        ):
+            for block in getattr(message, "content", None) or []:
+                text = getattr(block, "text", None)
+                if text:
+                    print(text)
+
+    asyncio.run(main())
+    ```
+  </Step>
+
+  <Step title="Clean up">
+    `CodebaseMemory` opens an `httpx.Client` — close it when you're done, or use it as a context manager.
+
+    ```python
+    memory.close()
+    ```
+  </Step>
+</Steps>
+
+## Tool factory parameters
+
+<ParamField path="memory" type="CodebaseMemory">
+  Required. The findings-store client. Without it, no tools are returned.
+</ParamField>
+
+<ParamField path="graph" type="ImportGraph" default="None">
+  Optional. When supplied alongside `enable_impact=True`, adds an `impact_analysis` tool that calls `graph.format_impact(file_path)`.
+</ParamField>
+
+<ParamField path="recall_top_k" type="int" default="5">
+  Top-k cutoff passed through to `memory.format_recall(...)`.
+</ParamField>
+
+<ParamField path="recall_threshold" type="float" default="0.25">
+  Minimum similarity score for a result to be included in `recall_findings` output.
+</ParamField>
+
+<ParamField path="enable_store" type="bool" default="True">
+  Whether to register the `store_finding` tool. Set `False` for a read-only recall workflow.
+</ParamField>
+
+<ParamField path="enable_impact" type="bool" default="True">
+  Whether to register `impact_analysis` when `graph` is supplied.
+</ParamField>
+
+<Note>
+  Unlike `make_langchain_tools` and `make_openai_tools`, this factory has **no** `enable_recall` flag. `recall_findings` is always registered when `memory` is provided.
+</Note>
+
+## Telemetry to the dashboard
+
+`rb.claude_agent_telemetry(...)` returns an adapter you wrap around `query()` to emit `run_start`, per-tool `step`, and `run_finish` events to the dashboard. No steering injection happens — the agent loop is owned by the Claude Code CLI process — but you get visibility into which tools fired, in what order, with what observations, and how long each took.
+
+```python
+import asyncio
+from claude_agent_sdk import query
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
+
+async def main():
+    async with rb.claude_agent_telemetry(
+        agent_name="reviewer",
+        task="investigate MarkerWidget",
+        model="claude-haiku-4-5",
+    ) as tele:
+        async for message in tele.wrap(
+            query(prompt="...", options={"tools": tools, "model": "claude-haiku-4-5"}),
+        ):
+            # process message yourself; telemetry was already emitted
+            ...
+
+asyncio.run(main())
+```
+
+The adapter is a sync + async context manager. Exceptions inside the `async with` block are recorded as `failure: <ExceptionType>` on `run_finish`. To override the default success outcome on a clean exit, call `tele.mark_failure(reason="...")` before leaving the block.
+
+## What you don't get on this path
+
+The Claude Agent SDK runs the agent loop inside the Claude Code CLI, which does not expose the per-step hooks the steering pipeline needs. On this path, `ReasonBlocks` does not:
+
+- Score the agent's reasoning steps for difficulty
+- Advance the difficulty FSM
+- Evaluate trajectory monitors and inject steering text
+- Retrieve E1, E2, or E3 patterns from the pattern store
+- Route the model based on FSM state
+
+If you need those features today against Claude, use the [Claude Messages API guide](/guides/claude-messages) — `run_messages_agent_loop` gives you full turn-by-turn control inside Python and runs the entire steering pipeline. The LangChain middleware also drives Anthropic models if you want to layer LangChain's tool-binding shape on top.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Claude tools reference" icon="wrench" href="/api-reference/integrations/claude-tools">
+    `make_claude_tools`, `make_claude_agent_sdk_tools`, and `run_messages_agent_loop` API surface.
+  </Card>
+  <Card title="Codebase memory" icon="database" href="/guides/codebase-memory">
+    Storing, recalling, and invalidating findings across runs.
+  </Card>
+</CardGroup>

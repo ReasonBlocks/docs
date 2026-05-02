@@ -1,69 +1,85 @@
 ---
 title: "Persist agent findings with CodebaseMemory"
-description: "Store, recall, and invalidate per-codebase agent findings using ReasonBlocks CodebaseMemory — a semantic findings store scoped to each codebase."
+description: "Store, recall, and invalidate per-codebase findings using CodebaseMemory — a transport-resilient client for the ReasonBlocks findings store."
 ---
 
-`CodebaseMemory` is a persistent findings store scoped to a codebase ID. It lets an agent store observations during a run — bug locations, behavioral notes, architectural patterns — and retrieve them semantically on future runs. This turns isolated one-shot reviews into a growing knowledge base that gets more useful with every run.
+`CodebaseMemory` is a thin client over the rb-api `/findings/...` endpoints. It lets an agent persist observations during a run — bug locations, behavioral notes, architectural patterns — and recall them semantically on future runs. All transport errors are caught and surface as empty results / `None` / `0`, so a missing rb-api never breaks the agent loop.
 
-## Initialize CodebaseMemory
+## Initialize
 
 ```python
-from reasonblocks.codebase_memory import CodebaseMemory
+from reasonblocks import CodebaseMemory
 
 memory = CodebaseMemory(
     codebase_id="pydantic/pydantic",   # any stable identifier for the repo
     api_key="rb_live_...",
+    base_url=None,                      # defaults to the hosted API
+    timeout=None,                       # defaults to the SDK timeout
 )
 ```
 
-The `codebase_id` is your key for the findings store — all findings stored under the same ID are searchable together. A common pattern is `org/repo` or `repo@sha:abc123` when you want to scope findings to a specific commit.
+Constructor signature:
+
+<ParamField path="codebase_id" type="str" required>
+  Required. Identifier the findings are scoped under. Common patterns: `org/repo`, `repo@sha:abc123`. All findings stored under the same id are searchable together.
+</ParamField>
+
+<ParamField path="api_key" type="str" required>
+  Sent as `Authorization: Bearer <api_key>` on every request.
+</ParamField>
+
+<ParamField path="base_url" type="str" default="DEFAULT_BASE_URL">
+  Override to point at a self-hosted rb-api. Trailing slashes are stripped.
+</ParamField>
+
+<ParamField path="timeout" type="float" default="DEFAULT_TIMEOUT">
+  HTTP timeout passed to the underlying `httpx.Client`.
+</ParamField>
 
 <Tip>
-  Pass the same `codebase_id` to both `CodebaseMemory` and `rb.middleware(codebase_id=...)` to align findings retrieval with E1 pattern scoping.
+  Pass the same `codebase_id` to `CodebaseMemory` and to `rb.middleware(codebase_id=...)` if you also use the middleware — the middleware uses it to scope E1 retrieval.
 </Tip>
 
-## Store and recall findings
+## Store and recall
 
-### Storing a finding
+### Store a finding
 
 ```python
 finding_id = memory.store(
     content="BaseModel.validate raises ValidationError on extra=forbid when unknown fields are present",
     file_path="pydantic/main.py",
     finding_type="behavior",  # bug | behavior | pattern | note
+    metadata={"reviewer": "alice", "severity": "low"},
 )
 ```
 
-`store` returns the finding ID on success, or `None` if the transport fails. Content is truncated at 8,000 characters; `file_path` at 512.
+Returns the finding id on success or `None` on transport error. Content is truncated server-side at 8000 chars; `file_path` at 512; `finding_type` at 64.
 
-### Recalling findings
+### Recall by query
 
 ```python
-results = memory.recall("validator error handling", top_k=5)
+results = memory.recall(
+    "validator error handling",
+    top_k=5,
+    score_threshold=0.25,
+)
 
 for r in results:
     print(r["file_path"], r["score"], r["content"])
 ```
 
-`recall` returns a list of dicts ordered by descending relevance score. Each dict contains `content`, `file_path`, `finding_type`, `score`, and any metadata you attached at store time.
+Returns a list of `{content, file_path, finding_type, score, ...}` dicts ordered by descending score. Raise `score_threshold` for tighter matches; lower it for more recall.
 
-You can raise or lower `score_threshold` (default `0.25`) to control how broadly the search matches:
+### Pre-formatted recall (for tool outputs)
 
-```python
-# Require higher relevance
-results = memory.recall("validator error handling", top_k=3, score_threshold=0.5)
-```
-
-### Pre-formatted recall for tool outputs
-
-`format_recall` combines `recall` with a human-readable renderer. Use it when you want to return findings directly to an LLM as a tool observation string:
+`format_recall` combines `recall` with a human-readable renderer. Use it when a tool needs to return findings as a string.
 
 ```python
 digest = memory.format_recall(
     "validator error handling",
     top_k=5,
     score_threshold=0.25,
-    max_len=300,    # truncate each finding's content to this length
+    max_len=300,    # truncate each finding's content
 )
 print(digest)
 # Found 2 relevant prior findings:
@@ -72,15 +88,17 @@ print(digest)
 # BaseModel.validate raises ValidationError on extra=forbid ...
 ```
 
+Returns `"(no relevant findings in cache yet)"` when nothing matches.
+
 ## Other operations
 
-### List all findings
+### List every finding
 
 ```python
 all_findings = memory.list_all()
 ```
 
-Returns every finding stored for the codebase, unfiltered. Useful for auditing the cache before a run.
+Useful for auditing the cache before a run.
 
 ### Batch store
 
@@ -89,191 +107,77 @@ count = memory.store_many([
     {"content": "...", "file_path": "pydantic/main.py", "finding_type": "bug"},
     {"content": "...", "file_path": "pydantic/validators.py", "finding_type": "behavior"},
 ])
-print(f"Stored {count} findings")
 ```
 
-Each dict must have at least `content`; `file_path`, `finding_type`, and `metadata` are optional.
+Each dict needs at least `content`. `file_path`, `finding_type`, and `metadata` are optional. Returns the count actually stored (entries that fail or have empty content are skipped).
 
-### Check cache coverage
+### Coverage check
 
-`coverage_for` tells you what fraction of a file list has at least one finding stored. Use it to decide whether the agent can answer from cache or needs extra tooling:
+`coverage_for` returns the fraction of a file list that has at least one stored finding. A soft suffix-match means a stored `pydantic/main.py` covers a query for bare `main.py`.
 
 ```python
-files_to_review = ["pydantic/main.py", "pydantic/validators.py", "pydantic/fields.py"]
-coverage = memory.coverage_for(files_to_review)
+files = ["pydantic/main.py", "pydantic/validators.py", "pydantic/fields.py"]
+coverage = memory.coverage_for(files)
 
 if coverage < 0.5:
-    print("Cache is sparse — agent should do a full review")
+    print("cache is sparse - do a full review")
 else:
-    print(f"Cache covers {coverage:.0%} of files")
+    print(f"cache covers {coverage:.0%} of files")
 ```
 
 ### Invalidate stale findings
 
-When files change, their cached findings may be stale. Call `invalidate` with a list of file paths to drop all findings for those files:
+When files change, drop their findings:
 
 ```python
 deleted = memory.invalidate(["pydantic/main.py", "pydantic/validators.py"])
-print(f"Removed {deleted} stale findings")
 ```
+
+Returns the number deleted server-side.
 
 ### Clear the entire cache
 
 ```python
-memory.clear()  # drops all stored findings — irreversible
+memory.clear()  # drops every finding for the codebase_id - irreversible
 ```
 
 <Warning>
-  `clear()` deletes every finding for the `codebase_id`. This cannot be undone.
+  `clear()` cannot be undone. Use `invalidate()` for targeted cleanups.
 </Warning>
 
-## Combine with ImportGraph for blast-radius invalidation
-
-When a file changes, you often want to invalidate not just that file's findings but also every file that imports it. `ImportGraph` gives you that blast radius.
+### Release the HTTP client
 
 ```python
-from reasonblocks.codebase_memory import CodebaseMemory
-from reasonblocks.import_graph import ImportGraph
+memory.close()
+```
 
-# Build the graph from your repo's Python source files
+`CodebaseMemory` holds a persistent `httpx.Client` to keep TCP connections warm across calls. Call `close()` when you're done if your process needs to release sockets cleanly.
+
+## Pair with ImportGraph for blast-radius invalidation
+
+When a file changes, you usually want to invalidate every file that imports it. `ImportGraph` (see [Import graph](/api-reference/import-graph)) gives you the blast radius:
+
+```python
+from reasonblocks import ImportGraph
+
 graph = ImportGraph()
 graph.build_from_files({path: open(path).read() for path in py_files})
 
-# A PR touched these files
 changed_files = ["pydantic/main.py"]
-
-# Expand to all affected files (direct importers, depth=1)
 affected = graph.blast_radius(changed_files, depth=1)
 
-# Invalidate findings for the whole affected set
 deleted = memory.invalidate(list(affected))
-print(f"Invalidated {deleted} findings across {len(affected)} files")
+print(f"invalidated {deleted} findings across {len(affected)} files")
 ```
 
 <Note>
-  `ImportGraph.build_from_files` requires `networkx`. Install it with `pip install networkx`.
+  `ImportGraph.build_from_files` requires `networkx`. Install with `pip install networkx`.
 </Note>
 
-You can also print a human-readable impact summary for a specific file:
+## Wire into your agent
 
-```python
-print(graph.format_impact("pydantic/main.py"))
-# Impact analysis for pydantic/main.py:
-#   Imported by 12 files (dependents -- affected if this file breaks):
-#     <- pydantic/__init__.py
-#     <- pydantic/generics.py
-#     ...
-#   Imports 3 files (dependencies -- this file relies on):
-#     -> pydantic/fields.py
-#     ...
-```
+Each framework has a tool factory wrapping `CodebaseMemory` (and optionally `ImportGraph`). See:
 
-## Add memory tools to your agent
-
-ReasonBlocks ships tool factories for each supported framework. Pick the one that matches your setup.
-
-<Tabs>
-  <Tab title="LangChain">
-    `make_langchain_tools` returns `@tool`-decorated functions compatible with `create_agent` and LangGraph.
-
-    ```python
-    from langchain.agents import create_agent
-    from reasonblocks.codebase_memory import CodebaseMemory
-    from reasonblocks.import_graph import ImportGraph
-    from reasonblocks.integrations.langchain_tools import make_langchain_tools
-
-    memory = CodebaseMemory(codebase_id="my-org/my-repo", api_key="rb_live_...")
-    graph = ImportGraph().build_from_files(py_files)
-
-    rb_tools = make_langchain_tools(
-        memory,
-        graph,
-        recall_top_k=5,
-        recall_threshold=0.25,
-        enable_recall=True,
-        enable_store=True,
-        enable_impact=True,
-    )
-
-    agent = create_agent(
-        model="anthropic:claude-sonnet-4-20250514",
-        tools=[*rb_tools, search_codebase, read_file],
-        system_prompt="Call recall_findings before reading any file.",
-        middleware=[rb.middleware(codebase_id="my-org/my-repo")],
-    )
-    ```
-  </Tab>
-  <Tab title="OpenAI Agents">
-    `make_openai_tools` returns `function_tool`-decorated callables for `Agent(tools=[...])`.
-
-    ```python
-    from agents import Agent, Runner
-    from reasonblocks.codebase_memory import CodebaseMemory
-    from reasonblocks.integrations.openai_agents import make_openai_tools
-
-    memory = CodebaseMemory(codebase_id="my-org/my-repo", api_key="rb_live_...")
-
-    rb_tools = make_openai_tools(
-        memory,
-        recall_top_k=5,
-        recall_threshold=0.25,
-        enable_recall=True,
-        enable_store=True,
-    )
-
-    agent = Agent(
-        name="reviewer",
-        instructions="Call recall_findings before reading any file.",
-        tools=[*rb_tools],
-    )
-    ```
-  </Tab>
-  <Tab title="Anthropic Messages API">
-    `make_claude_tools` returns `(tool_specs, dispatch)` for the Anthropic Messages API's tool-use format.
-
-    ```python
-    import anthropic
-    from reasonblocks.codebase_memory import CodebaseMemory
-    from reasonblocks.integrations.claude_tools import make_claude_tools
-
-    client = anthropic.Anthropic()
-    memory = CodebaseMemory(codebase_id="my-org/my-repo", api_key="rb_live_...")
-
-    tool_specs, dispatch = make_claude_tools(memory)
-
-    resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        tools=tool_specs,
-        messages=[{"role": "user", "content": "Find any validator bugs."}],
-    )
-
-    # Handle tool_use blocks
-    for block in resp.content:
-        if block.type == "tool_use":
-            result = dispatch(block.name, block.input)
-            # ... send tool_result back in the next turn ...
-    ```
-
-    For a full agentic loop without manual turn management, use `run_messages_agent_loop`:
-
-    ```python
-    from reasonblocks.integrations.claude_tools import (
-        make_claude_tools,
-        run_messages_agent_loop,
-    )
-
-    tool_specs, dispatch = make_claude_tools(memory)
-
-    output = run_messages_agent_loop(
-        client,
-        model="claude-sonnet-4-20250514",
-        messages=[{"role": "user", "content": "Find any validator bugs."}],
-        tool_specs=tool_specs,
-        dispatch=dispatch,
-        system="Call recall_findings before reading any file.",
-    )
-    print(output["final_text"])
-    ```
-  </Tab>
-</Tabs>
+- [LangChain tools](/guides/langchain#add-codebasememory-tools) via `make_langchain_tools`
+- [OpenAI Agents tools](/guides/openai-agents#add-codebasememory-tools) via `make_openai_tools`
+- `reasonblocks.integrations.claude_tools.make_claude_tools` for the Anthropic Messages API

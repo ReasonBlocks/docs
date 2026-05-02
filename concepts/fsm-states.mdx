@@ -1,66 +1,77 @@
 ---
-title: "Agent difficulty states (FSM)"
-description: "How ReasonBlocks classifies agent difficulty across FAST, NORMAL, SLOW, and SKIP states, and what each state means for model routing and E-trace injection."
+title: "FSM states"
+description: "How the difficulty FSM classifies agent trajectories across INIT, FAST, NORMAL, SLOW, SKIP, and END, and how each state controls E-trace retrieval, monitor cooldowns, and model routing."
 ---
 
-ReasonBlocks tracks how hard your agent is working on each step using a finite state machine (FSM). After scoring a step, the FSM looks at the recent difficulty history and transitions between states that describe the agent's current trajectory — coasting through easy steps, working normally, struggling with a hard problem, or appearing completely stuck. The current state gates model routing and controls whether E-trace injections are retrieved at all.
+`DifficultyFSM` tracks how hard your agent is working over the last several steps. After scoring a step, the FSM looks at the recent difficulty history and transitions between states that summarize the trajectory — coasting, working normally, struggling, or stalled for an extended window. The current state gates E-trace retrieval, sets monitor injection cooldowns, and selects the model when `model_routing` is configured.
 
 ## States
 
-| State    | Meaning                                                                                          |
-|----------|--------------------------------------------------------------------------------------------------|
-| `INIT`   | Starting state before any step has been scored. Transitions to `NORMAL` on the first scored step. |
-| `FAST`   | The agent has produced consistently low-difficulty steps recently. E-traces are skipped entirely. |
-| `NORMAL` | Default operating state. Scoring, monitors, and E1/E2/E3 injections all run as normal.           |
-| `SLOW`   | The agent has produced consistently high-difficulty steps recently. A stronger model may be routed. |
-| `SKIP`   | The agent has been in high-difficulty territory for an extended window. Indicates a deeply stalled run. |
-| `END`    | Terminal state. Once reached, the FSM no longer transitions.                                      |
+| State | Meaning | E-trace pipeline | Monitor cooldown |
+|---|---|---|---|
+| `INIT` | Starting state, before any step has been scored. | E3 only (first call). | n/a |
+| `FAST` | Recent window is consistently easy. | Skipped entirely — no Qdrant, no embeddings. | every 5 steps |
+| `NORMAL` | Default operating state. | Full E1 / E2 / E3 pipeline. | every 3 steps |
+| `SLOW` | Recent window is consistently hard. | Full pipeline. Routes to mapped model if any. | every 2 steps |
+| `SKIP` | High difficulty has persisted for a long window. | Same as `SLOW`. | every 2 steps |
+| `END` | Defined in the enum but **unreachable** through the built-in transition function. Reserved for future use. | n/a | n/a |
+
+<Note>
+  `END` is part of `FSMState` for forward compatibility but the shipped `DifficultyFSM.transition` never returns it. Treat it as inert today.
+</Note>
+
+## Defaults
+
+`DifficultyFSM` is constructed with these defaults:
+
+| Parameter | Default | Purpose |
+|---|---|---|
+| `fast_threshold` | `0.2` | A step at or below this score counts as "easy". |
+| `slow_threshold` | `0.6` | A step at or above this score counts as "hard". |
+| `skip_threshold` | `0.85` | A step at or above this score counts toward the `SKIP` gate. |
+| `hysteresis_margin` | `0.1` | Buffer applied when leaving `FAST` or `SLOW` to prevent oscillation. |
+| `fast_window` | `6` | Number of consecutive easy steps required to enter `FAST` from `NORMAL`. |
+| `slow_window` | `5` | Number of consecutive hard steps required to enter `SLOW` from `NORMAL`. |
+| `skip_window` | `35` | Number of consecutive very-hard steps required to enter `SKIP` from `SLOW`. |
 
 ## Transition rules
 
-The FSM uses three thresholds and a hysteresis margin to decide when to transition. All values are configurable.
-
-| Parameter           | Default | Purpose                                                               |
-|---------------------|---------|-----------------------------------------------------------------------|
-| `fast_threshold`    | `0.2`   | A step below this score is considered "easy".                         |
-| `slow_threshold`    | `0.6`   | A step above this score is considered "hard".                         |
-| `skip_threshold`    | `0.85`  | A step above this score is considered "very hard" for the SKIP gate. |
-| `hysteresis_margin` | `0.1`   | Buffer applied when leaving FAST or SLOW to prevent rapid oscillation. |
+**From `INIT`:** the very next scored step transitions to `NORMAL`.
 
 **From `NORMAL`:**
 
-- Transitions to `FAST` if the last **6** steps all scored below `fast_threshold` (0.2).
-- Transitions to `SLOW` if the last **5** steps all scored above `slow_threshold` (0.6).
-- Otherwise stays `NORMAL`.
+- Enter `FAST` if the last `fast_window` (default 6) steps all scored strictly below `fast_threshold` (0.2).
+- Enter `SLOW` if the last `slow_window` (default 5) steps all scored strictly above `slow_threshold` (0.6).
+- Otherwise stay `NORMAL`.
 
 **From `FAST`:**
 
-- Transitions back to `NORMAL` if the current score exceeds `fast_threshold + hysteresis_margin` (0.3).
-- Otherwise stays `FAST`.
+- Return to `NORMAL` if the current score exceeds `fast_threshold + hysteresis_margin` (0.3).
+- Otherwise stay `FAST`.
 
 **From `SLOW` or `SKIP`:**
 
-- Transitions back to `NORMAL` if the current score drops below `slow_threshold - hysteresis_margin` (0.5).
-- Transitions to `SKIP` if the last **35** steps all scored above `skip_threshold` (0.85).
-- Otherwise stays `SLOW`.
+- Return to `NORMAL` if the current score drops below `slow_threshold - hysteresis_margin` (0.5).
+- Enter `SKIP` from `SLOW` if the last `skip_window` (default 35) steps all scored strictly above `skip_threshold` (0.85).
+- Otherwise stay in the current state.
 
 <Note>
-  The hysteresis margin prevents the FSM from rapidly flipping between states when scores hover near a threshold. A single easy step does not exit SLOW — the score must drop meaningfully below the boundary.
+  The hysteresis margin prevents the FSM from rapidly flipping when scores hover near a threshold. A single easy step does not exit `SLOW` — the score must drop meaningfully below the boundary.
 </Note>
 
 ## What each state does
 
-**`FAST`** skips the entire E-trace pipeline. No pattern-store lookups, no embeddings, no injections beyond what is already cached. This keeps overhead minimal when the agent is making consistent progress. Monitors still run in FAST state because loop detection is most useful precisely when the agent is moving quickly.
+`FAST` skips the full E-trace pipeline. Monitor evaluation still runs (loop detection is most useful when the agent is moving fast and might miss that it's looping). The monitor injection cooldown stretches to every 5 steps so guidance does not pile up on a healthy run.
 
-**`NORMAL`** runs the full pipeline: monitors evaluate, E1 is queried if the monitor gate allows it, E2 retrieves pattern-level guidance, and E3 provides universal rules (on the first call).
+`NORMAL` runs the full pipeline: monitors evaluate server-side, E1 is queried if the gate allows it, E2 retrieves up to two patterns, and E3 fires only if it has not already (it fires once on step 0).
 
-**`SLOW`** runs the full pipeline and, if you have configured `model_routing`, routes the request to a stronger model. Monitor injection cooldowns are shorter in SLOW state (every 2 steps instead of 3) so guidance arrives more frequently.
+`SLOW` runs the full pipeline and, if `model_routing` maps `"SLOW"` to a model, the request is overridden to that model. The cooldown shrinks to every 2 steps so guidance arrives more frequently.
 
-**`SKIP`** behaves like `SLOW` but signals a deeply stalled run. It applies the same 2-step cooldown for monitor injections.
+`SKIP` shares `SLOW`'s routing and cooldown. It surfaces in the dashboard as a separate state so you can distinguish brief difficulty from extended stalls.
 
 ## Configuring thresholds
 
-Pass custom thresholds when constructing `ReasonBlocks`. Only the values you specify are overridden; the rest use their defaults.
+Pass any subset of the FSM parameters via `fsm_thresholds`. Unspecified values keep their defaults.
 
 ```python
 from reasonblocks import ReasonBlocks
@@ -72,24 +83,33 @@ rb = ReasonBlocks(
         "slow_threshold": 0.65,
         "skip_threshold": 0.90,
         "hysteresis_margin": 0.08,
+        "fast_window": 8,
+        "slow_window": 4,
     },
 )
 ```
 
 ## Configuring model routing
 
-Map FSM state names to model identifiers. ReasonBlocks transparently swaps the model on the affected steps.
+`model_routing` is a separate dict keyed by FSM state name. Map any subset of `"FAST"`, `"NORMAL"`, `"SLOW"`, `"SKIP"` to a model identifier; states without a mapping use whatever model the agent was created with.
 
 ```python
 rb = ReasonBlocks(
     api_key="rb_live_...",
     model_routing={
-        "SLOW": "anthropic/claude-opus-4-5",
-        "FAST": "anthropic/claude-haiku-3-5",
+        "FAST": "anthropic:claude-haiku-4-5-20251001",
+        "SLOW": "anthropic:claude-sonnet-4-20250514",
+        "SKIP": "anthropic:claude-sonnet-4-20250514",
     },
 )
 ```
 
 <Tip>
-  A common pattern is to route `SLOW` and `SKIP` to a stronger model and leave `NORMAL` and `FAST` on your default. This concentrates compute budget on the steps where it matters most.
+  A common pattern is to leave `NORMAL` on your default model, route `FAST` to a cheaper Haiku-class model, and route `SLOW`/`SKIP` to Sonnet-class. This concentrates compute budget on the steps where it matters.
 </Tip>
+
+## What the FSM does **not** do
+
+- It does not transition to `SKIP` or any other state based on `token_budget`. The token budget is tracked-only and exposed via `TraceStateManager.get_budget_used()`.
+- It does not advance to `END` on a final answer. The transition function never reaches `END` today.
+- It does not consume monitor signals. Monitor evaluation is independent of FSM state — both run on every scored step.

@@ -1,9 +1,9 @@
 ---
-title: "Install and configure the ReasonBlocks SDK"
-description: "Install ReasonBlocks via pip, set your API key, and configure optional parameters like base URL for self-hosted deployments and E-trace retrieval."
+title: "Installation"
+description: "Install the ReasonBlocks SDK from PyPI and configure the client. Covers every constructor parameter, environment variables, and self-hosted deployments."
 ---
 
-ReasonBlocks is a standard Python package distributed on PyPI. Installation is a single `pip` command. This page covers the full installation process, all configuration options, and the environment variables the SDK reads at runtime.
+ReasonBlocks is a standard Python package on PyPI. Installation is one `pip` command. This page covers requirements, the full constructor signature, and the environment variables involved.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ ReasonBlocks is a standard Python package distributed on PyPI. Installation is a
 - `langchain>=1.0`
 - `httpx>=0.27`
 
-Both `langchain` and `httpx` are declared as required dependencies and are installed automatically with the SDK.
+Both `langchain` and `httpx` are declared as required dependencies and install automatically.
 
 ## Install the package
 
@@ -19,7 +19,7 @@ Both `langchain` and `httpx` are declared as required dependencies and are insta
 pip install reasonblocks
 ```
 
-To install a specific version, pin it explicitly:
+To pin a specific version:
 
 ```bash
 pip install "reasonblocks==0.1.0"
@@ -27,33 +27,29 @@ pip install "reasonblocks==0.1.0"
 
 ### Optional dependencies
 
-`ImportGraph` — the Python import graph and blast-radius query tool — requires `networkx`. It is not installed automatically. If you plan to use `ImportGraph`, install it separately:
+`ImportGraph` (Python import graph + blast-radius queries) requires `networkx`, which is not installed automatically. If you plan to use `ImportGraph`, install it separately:
 
 ```bash
 pip install networkx
 ```
 
 <Note>
-  The rest of the SDK (middleware, `CodebaseMemory`, E-trace injection, monitors) has no dependency on `networkx`. You only need it if you call `ImportGraph` directly.
+  The middleware, `CodebaseMemory`, E-trace injection, and the local monitor suite have no dependency on `networkx`. You only need it if you call `ImportGraph` directly.
 </Note>
 
-For local development and running the test suite, install the `dev` extras:
+For local development:
 
 ```bash
 pip install "reasonblocks[dev]"
 ```
 
-## Set your API key
+## API key
 
-The SDK requires an API key to authenticate with the ReasonBlocks API. Get yours from the **Quickstart** page in the [ReasonBlocks dashboard](https://app.reasonblocks.com).
+The SDK requires an API key to authenticate with the ReasonBlocks API. Get yours from the **Quickstart** page in the [ReasonBlocks dashboard](https://app.reasonblocks.com). Keys start with `rb_live_`.
 
-### Environment variable (recommended)
-
-Set `REASONBLOCKS_API_KEY` in your environment. The SDK reads this variable automatically if you prefer not to pass the key in code.
-
-```bash
-export REASONBLOCKS_API_KEY=rb_live_...
-```
+<Warning>
+  The `ReasonBlocks` constructor does **not** read `REASONBLOCKS_API_KEY` from the environment. You must pass `api_key` explicitly. Storing the key in an env var is still recommended — your code reads it.
+</Warning>
 
 ```python
 import os
@@ -62,94 +58,105 @@ from reasonblocks import ReasonBlocks
 rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
 ```
 
-### Pass directly
-
-You can also pass the key directly to the constructor:
-
-```python
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(api_key="rb_live_...")
-```
-
-<Warning>
-  Do not hardcode your API key in source files you commit to version control. Use an environment variable or a secrets manager instead.
-</Warning>
-
-## Configure the client
-
-`ReasonBlocks.__init__` accepts several keyword arguments beyond `api_key`. All are optional.
+## Constructor parameters
 
 ```python
 from reasonblocks import ReasonBlocks
 
 rb = ReasonBlocks(
     api_key="rb_live_...",
-    base_url="https://your-rb-api-host.example.com",  # self-hosted
+    base_url="https://your-rb-api-host.example.com",
     token_budget=100_000,
-    monitor_names=["loop", "confidence", "evidence", "budget", "strategy_exhaustion"],
     fsm_thresholds={
         "fast_threshold": 0.2,
         "slow_threshold": 0.6,
         "skip_threshold": 0.85,
     },
     model_routing={
-        "FAST": "anthropic:claude-haiku-4-5-20251001",
-        "SLOW": "anthropic:claude-sonnet-4-20250514",
+        "FAST":   "anthropic:claude-haiku-4-5-20251001",
+        "NORMAL": "anthropic:claude-sonnet-4-20250514",
+        "SLOW":   "anthropic:claude-sonnet-4-20250514",
+        "SKIP":   "anthropic:claude-sonnet-4-20250514",
     },
     e_traces_enabled=True,
+    customer_id="acme-prod",
+    live_streaming_enabled=True,
+    task_profile="coding",
 )
 ```
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `api_key` | `str` | — | Your ReasonBlocks API key. Required. |
-| `base_url` | `str \| None` | `None` | Override the API base URL. Use this for self-hosted deployments. |
-| `token_budget` | `int \| None` | `None` | Maximum token count tracked per run by the state manager. |
-| `monitor_names` | `list[str] \| None` | `None` | Monitor names to enable. When `None`, the server-side default suite runs. |
-| `fsm_thresholds` | `dict \| None` | `None` | Override FSM transition thresholds (`fast_threshold`, `slow_threshold`, `skip_threshold`). |
-| `model_routing` | `dict \| None` | `None` | Map FSM state names (`"FAST"`, `"SLOW"`) to model identifiers. |
-| `e_traces_enabled` | `bool` | `True` | Whether to retrieve and inject E-traces from the pattern store. |
-| `customer_id` | `str \| None` | `None` | Scope E1 pattern retrieval to a specific customer. |
-| `live_streaming_enabled` | `bool` | `True` | Stream per-step telemetry to the API as each step completes. Set to `False` for fully offline operation. |
-| `task_profile` | `str` | `"coding"` | Monitor weight profile used server-side. Built-in options: `"coding"`, `"pr_review"`, `"qa"`. |
+<ParamField path="api_key" type="str" required>
+  Your ReasonBlocks API key. The SDK does not auto-read it from the environment.
+</ParamField>
+
+<ParamField path="base_url" type="str | None" default="None">
+  Override the rb-api origin. When unset, the underlying HTTP clients fall back to the `REASONBLOCKS_BASE_URL` env var, then to the hosted production endpoint. Set this when running rb-api on a self-hosted host or locally.
+</ParamField>
+
+<ParamField path="token_budget" type="int | None" default="None">
+  Maximum token count tracked per run. Tracked-only — the FSM does **not** transition to `SKIP` based on budget consumption; the value is exposed via `TraceStateManager.get_budget_used()` for callers that want to query it.
+</ParamField>
+
+<ParamField path="fsm_thresholds" type="dict[str, float] | None" default="None">
+  Override `DifficultyFSM` thresholds. Recognized keys: `fast_threshold`, `slow_threshold`, `skip_threshold`, `hysteresis_margin`, `fast_window`, `slow_window`, `skip_window`. Unspecified values keep their defaults. See [FSM states](/concepts/fsm-states).
+</ParamField>
+
+<ParamField path="model_routing" type="dict[str, str] | None" default="None">
+  Map FSM state names (`"FAST"`, `"NORMAL"`, `"SLOW"`, `"SKIP"`) to model identifiers. When the middleware enters a state with a mapping, it overrides the model for that step via `request.override(model=...)`.
+</ParamField>
+
+<ParamField path="e_traces_enabled" type="bool" default="True">
+  When `False`, E1/E2/E3 injections are not registered, so retrieval calls to rb-api never fire. The monitor steering injection still runs.
+</ParamField>
+
+<ParamField path="customer_id" type="str | None" default="None">
+  Forwarded to `E1Injection` so instance-level patterns retrieved from rb-api are scoped to a specific customer.
+</ParamField>
+
+<ParamField path="live_streaming_enabled" type="bool" default="True">
+  Stream `run_start` / `step` / `run_finish` events to rb-api as the run unfolds. Set to `False` for offline mode — the local `step_log` still populates.
+</ParamField>
+
+<ParamField path="task_profile" type="str" default='"coding"'>
+  Server-side monitor weight preset. Built-in profiles: `coding` (default), `pr_review` (review agents — drops `edit_revert` and `test_repeat` to 0), `qa` (over-qualifying answers — `hedge` dominates). The value is forwarded to `/monitors/evaluate` and to `MonitorSteeringInjection`.
+</ParamField>
+
+<ParamField path="monitor_names" type="list[str] | None" default="None">
+  Accepted for backward compatibility but currently a no-op. The built-in monitor suite runs server-side and ignores any local list. Custom monitors require a custom injection. {/* TODO: verify whether monitor_names will be wired back into create_monitors() in a future SDK version */}
+</ParamField>
+
+## Environment variables
+
+| Variable | Read by | Effect |
+|---|---|---|
+| `REASONBLOCKS_BASE_URL` | `reasonblocks._settings` (at import time) | Default base URL for `ReasonBlocksAPI`, `MonitorClient`, and `CodebaseMemory` when `base_url` is not passed. Falls back to the hosted production endpoint. |
+| `REASONBLOCKS_API_TIMEOUT` | `reasonblocks._settings` (at import time) | HTTP timeout in seconds for the underlying clients. Defaults to `10.0`. |
+| `REASONBLOCKS_API_KEY` | **Not read by the SDK.** | Pass it to `ReasonBlocks(api_key=...)` explicitly. Storing it in this env var and reading it from your own code is the conventional pattern. |
 
 ## Self-hosted deployments
 
-If you run the ReasonBlocks API server yourself, point the SDK at it using `base_url`:
-
-```python
-rb = ReasonBlocks(
-    api_key=os.environ["REASONBLOCKS_API_KEY"],
-    base_url=os.environ["REASONBLOCKS_API_URL"],
-    e_traces_enabled=True,
-)
-```
-
-You can also set the API base URL via the `REASONBLOCKS_API_URL` environment variable and read it in your code:
+If you run rb-api yourself, point the SDK at it via `base_url`:
 
 ```python
 import os
 from reasonblocks import ReasonBlocks
 
 rb = ReasonBlocks(
-    api_key=os.environ.get("REASONBLOCKS_API_KEY", "rb-example"),
-    base_url=os.environ.get("REASONBLOCKS_API_URL"),
-    e_traces_enabled=bool(os.environ.get("REASONBLOCKS_API_URL")),
+    api_key=os.environ["REASONBLOCKS_API_KEY"],
+    base_url=os.environ.get("REASONBLOCKS_BASE_URL", "http://localhost:9000"),
+    e_traces_enabled=True,
 )
 ```
 
-When `REASONBLOCKS_API_URL` is not set, `base_url` is `None` and E-traces are disabled. This pattern is useful for local development and CI environments where the API server is not available.
+When `REASONBLOCKS_BASE_URL` is not set, the underlying clients fall back to the hosted production endpoint baked into `reasonblocks._settings.DEFAULT_BASE_URL`.
 
 ## Verify your installation
 
-Run the following to confirm the package is installed and importable:
-
 ```bash
-python -c "import reasonblocks; print('ReasonBlocks installed successfully')"
+python -c "import reasonblocks; print('ReasonBlocks installed')"
 ```
 
-To verify your API key works, initialize a `ReasonBlocks` instance and call `rb.middleware()` without running a full agent:
+To check that constructor wiring is intact:
 
 ```python
 from reasonblocks import ReasonBlocks
@@ -159,4 +166,4 @@ mw = rb.middleware(agent_name="test")
 print("Middleware created:", mw)
 ```
 
-If no exception is raised, your installation is working correctly.
+If no exception is raised, the install is healthy.

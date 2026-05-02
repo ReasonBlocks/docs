@@ -1,125 +1,168 @@
 ---
-title: "Health monitors for agent trajectories"
-description: "The six built-in monitors that detect action loops, budget exhaustion, edit thrashing, test repetition, collapsed exploration, and rising hedging in agent runs."
+title: "Monitors"
+description: "ReasonBlocks ships two monitor surfaces: server-side trajectory monitors that drive steering injection via /monitors/evaluate, and a local pure-Python suite of six heuristics used by TokenSavingMiddleware and SQLiteMonitorSink."
 ---
 
-ReasonBlocks ships six health monitors that evaluate your agent's accumulated step trace on every scored step. Each monitor produces a score between 0 and 1 — where 1 means maximum badness — and a weighted sum produces a single composite health score. When a monitor's individual score reaches **0.6** (the default fire threshold), it is considered "fired," and its name appears in the `monitors_fired` list for that step.
+ReasonBlocks ships **two** monitor surfaces. They share the same six heuristics by name but live in different processes and do different jobs. Conflating them is the easiest way to misread what the SDK is doing.
 
-Monitor results gate E1 retrieval: when any monitor fires, or when the composite score exceeds 0.15, ReasonBlocks queries for instance-level guidance from your pattern library. This keeps pattern-store lookups off of healthy steps where no intervention is needed.
+- **Server-side** — `POST /monitors/evaluate` on rb-api. Driven by `MonitorSteeringInjection`. Returns a steering intervention the middleware appends to the system message. **This is what produces the `[REASONBLOCKS]` block users see.**
+- **Local** — `reasonblocks.monitors.suite.evaluate_all` and the per-monitor `score_*` functions. Pure Python, no network. Used by `TokenSavingMiddleware` for early-exit decisions and by `SQLiteMonitorSink` for offline trace inspection.
+
+## Server-side: monitor steering
+
+`MonitorSteeringInjection.retrieve` posts the current trace to `POST /monitors/evaluate` with the model identifier, `task_profile`, and any explicit weight overrides. The server runs the trajectory monitor suite, applies its two-path injection gate, optionally falls back to an `E2` pattern lookup, and returns:
+
+```python
+{
+    "inject":              bool,           # whether to fire an injection this step
+    "intervention_text":   str | None,     # rendered text to append to the system message
+    "fired":               list[str],      # monitor names whose individual score >= fire threshold
+    "scores":              dict[str, float],
+    "composite":           float,          # weighted sum
+    "failure_type":        str | None,     # categorical failure label
+    "intervention_source": str | None,     # which path produced intervention_text
+}
+```
+
+When `inject` is `True` and the text is new (different from the last firing's signature), the middleware queues a `PendingInjection` carrying that text plus `monitors_fired` and `failure_type`. Per-run guardrails are enforced client-side after the server's decision:
+
+- **Hard cap of 5 monitor injections per run.**
+- **Cooldowns by FSM state:** every 2 steps in `SLOW`/`SKIP`, every 3 in `NORMAL`, every 5 in `FAST`.
+- **Duplicate suppression:** the same intervention text is not re-queued back-to-back.
+
+The `task_profile` constructor argument selects the server-side weight preset:
+
+| Profile | Notes |
+|---|---|
+| `coding` (default) | Standard weights matching the local suite. |
+| `pr_review` | Read-only review agents — `edit_revert` and `test_repeat` weights drop to 0; `streak`, `diversity`, `hedge` are redistributed. |
+| `qa` | QA / tutoring agents — `hedge` dominates; `call_count` and `edit_revert` drop. |
+
+## Local: the six-monitor suite
+
+`reasonblocks.monitors.suite` exposes `evaluate_all(steps)` plus per-monitor `score_*` functions. Each returns a float in `[0, 1]` where 1 means maximum badness. The default fire threshold is **0.6**. The aggregator's default weights are:
+
+```python
+DEFAULT_WEIGHTS = {
+    "streak":      0.35,
+    "call_count":  0.15,
+    "edit_revert": 0.15,
+    "test_repeat": 0.15,
+    "diversity":   0.10,
+    "hedge":       0.10,
+}
+```
+
+The local suite is consumed by:
+
+- `TokenSavingMiddleware`, which reads `evaluate_all`'s `composite` and `fired` to decide when to inject an early-exit nudge or compress stale tool outputs.
+- `SQLiteMonitorSink`, which writes per-step monitor scores to a local SQLite DB for offline inspection.
+
+It does **not** drive the steering injection in the system message. That path is server-side only.
 
 ## The six monitors
 
 <AccordionGroup>
   <Accordion title="streak — same action repeated consecutively (weight: 0.35)">
-    The streak monitor detects when the agent calls the same tool back-to-back. It walks the trace in reverse and counts the length of the current run of identical actions, ignoring steps that produced no action.
+    Walks the trace in reverse and counts the current run of identical actions, ignoring steps that produced no action.
 
-    **Score:** `min(run_length / 5, 1.0)`. A streak of 1 (no repetition) scores 0.0. A streak of 5 or more scores 1.0.
+    **Score:** `min(run_length / 5, 1.0)`. A streak of 1 scores 0.0; a streak of 5 or more scores 1.0.
 
-    **Fires at:** score ≥ 0.6, which corresponds to 3 or more consecutive identical actions.
+    **Fires at:** score `>= 0.6`, i.e. 3 or more consecutive identical actions.
 
-    **Why it matters:** Repeated identical actions with different inputs are normal (e.g., reading multiple files). But the same action with the same or similar inputs usually means the agent is stuck in a loop and not making progress.
-
-    This monitor carries the highest weight (0.35) because action loops are the most common and most costly failure pattern in long-running agents.
+    **Why it carries the highest weight:** action loops are the most common and most costly failure pattern in long-running agents.
   </Accordion>
 
   <Accordion title="call_count — tool-call budget consumed (weight: 0.15)">
-    The call_count monitor tracks how many tool calls the agent has made relative to a budget. It counts every step that produced an action.
+    Counts every step that produced an action.
 
-    **Score:** `min(total_tool_calls / 20, 1.0)`. The score rises linearly from 0.0 at zero calls to 1.0 at 20 calls (the default budget).
+    **Score:** `min(total_tool_calls / 20, 1.0)`. The score rises linearly from 0.0 at zero calls to 1.0 at 20 calls.
 
-    **Fires at:** score ≥ 0.6, which corresponds to 12 or more tool calls.
+    **Fires at:** score `>= 0.6`, i.e. 12 or more tool calls.
 
-    **Why it matters:** A high call count on its own is not a failure, but in combination with other monitors it signals that the agent has consumed a large share of its budget without finishing. The composite score picks this up even when no single monitor is dominant.
-
-    The budget defaults to 20 calls. For agents that are expected to make many tool calls, you can adjust the monitor weights when evaluating the composite score.
+    A high call count alone is not a failure. In combination with another monitor, it surfaces in the composite as "the agent has spent a lot of its budget without finishing."
   </Accordion>
 
   <Accordion title="edit_revert — edits that undo each other (weight: 0.15)">
-    The edit_revert monitor detects two patterns of file-editing thrash:
+    Detects two patterns of file-editing thrash:
 
-    1. **Content revert:** The most recent edit's content is more similar to the edit *before* the previous one than to the previous edit itself — meaning the agent has effectively undone its prior change.
-    2. **Edit-fail-edit cycles:** The agent edits a file, receives an error observation, and then edits the same file again — repeating this cycle two or more times on the same path.
+    1. **Content revert:** the most recent edit's content is closer (by character-trigram Jaccard) to the edit *before* the previous one than to the previous edit itself, by a margin of 0.10.
+    2. **Edit-fail-edit cycles:** the agent edits a file, receives an error observation, then edits the same path again — repeated two or more times.
 
-    **Score:** 1.0 on a detected revert or two or more fail-edit cycles on the same file path; 0.0 on a clean edit history.
+    **Score:** `1.0` on a clean revert or two cycles on the same path; `0.0` on a clean edit history.
 
-    **Fires at:** any detected revert or thrash cycle scores directly at 1.0, which is above the 0.6 threshold.
-
-    **Why it matters:** Edit thrashing wastes tool calls and often indicates the agent is chasing a misdiagnosed root cause. Catching it early allows E-trace guidance to redirect the agent toward a different strategy.
-
-    Edit-like tools recognized by default: `edit`, `write`, `str_replace`, `str_replace_editor`, `patch`, `apply_patch`, `create_file`, `overwrite`.
+    Recognized edit-like tools: `edit`, `write`, `str_replace`, `str_replace_editor`, `patch`, `apply_patch`, `create_file`, `overwrite`.
   </Accordion>
 
   <Accordion title="test_repeat — same test failure repeating (weight: 0.15)">
-    The test_repeat monitor detects when the agent runs a test, receives a failure, and then runs the same test again with the same failure output — without making a substantive change in between.
+    Detects when the agent runs a test, receives a failure, and then runs the same test again with the same normalized failure signature.
 
-    It normalizes error messages before comparing them, stripping volatile fragments such as temporary file paths, UUIDs, memory addresses, PIDs, timestamps, and large numbers. This ensures the same underlying failure compares equal across re-runs even when the surrounding output differs.
+    Volatile fragments are stripped before comparison: temp paths, UUIDs, hex memory addresses, PIDs, timestamps, and large numeric runs.
 
-    **Score:** 1.0 when the same normalized failure signature appears two or more times consecutively; 0.0 otherwise.
+    **Score:** `1.0` when the same normalized signature appears two or more times consecutively; `0.0` otherwise.
 
-    **Fires at:** any repeated test failure scores directly at 1.0.
-
-    **Why it matters:** Running the same failing test repeatedly without making a code change is a clear sign the agent has not understood what the test failure is telling it. This monitor fires reliably on this pattern without false positives from minor output variation.
-
-    Test steps are identified by tool names (`pytest`, `test`, `run_tests`, `npm test`, `cargo test`) or by error keywords in the observation text.
+    Test steps are identified by tool name (`pytest`, `test`, `run_tests`, `npm test`, `cargo test`) or by error keywords in the observation (`assertionerror`, `failed`, `failures=`).
   </Accordion>
 
   <Accordion title="diversity — collapsed tool exploration (weight: 0.10)">
-    The diversity monitor detects when the agent's recent tool usage has collapsed to two or fewer distinct tools across a window of five consecutive calls, after the run has accumulated at least eight total tool calls.
+    Detects when recent tool usage has narrowed to two or fewer distinct tools across a 5-call tail, after the run has accumulated at least 8 total tool calls.
 
     **Score:**
-    - 1.0 if only one tool has been used in the last 5 calls.
-    - 0.7 if exactly two tools have been used but they are not healthily alternating (an `a-b-a-b-a` pattern is considered intentional and is excluded).
-    - 0.0 if three or more distinct tools appear in the window, or if the run has not yet reached the minimum call count.
+    - `1.0` if only one tool has been used in the last 5 calls.
+    - `0.7` if exactly two tools but the pattern is not a healthy alternation (`a-b-a-b-a` is excluded).
+    - `0.0` otherwise, including before the 8-call minimum is reached.
 
-    **Fires at:** score ≥ 0.6, which covers both the single-tool (1.0) and non-alternating two-tool (0.7) cases.
-
-    **Why it matters:** A healthy agent explores its tool set as the task progresses. Collapsing to a single repeated tool — especially after many calls — often means the agent has narrowed its strategy in an unproductive way.
+    **Fires at:** score `>= 0.6`, covering both the single-tool (1.0) and non-alternating two-tool (0.7) cases.
   </Accordion>
 
-  <Accordion title="hedge — rising hedging and retraction density (weight: 0.10)">
-    The hedge monitor tracks whether the agent's language is becoming increasingly uncertain or self-contradictory across the run. It operates on the `thought` text of each step.
+  <Accordion title="hedge — rising hedging or explicit retraction (weight: 0.10)">
+    Operates on the `thought` text of each step.
 
-    It measures two things:
+    1. **Retraction phrases** ("I was wrong", "never mind", "disregard that", "the bug is actually not...") anywhere in the trace score `1.0` immediately.
+    2. **Hedge density ratio:** the density of hedging words ("maybe", "perhaps", "might", "not sure", "on second thought", ...) in the late half of the run vs the early half. A ratio at or below 2× scores 0.0; ratio of 4× scores 1.0; linear in between.
 
-    1. **Retraction phrases:** Explicit reversals such as "I was wrong", "never mind", "disregard that", or "the bug is actually not...". Any retraction anywhere in the trace scores 1.0 immediately.
-    2. **Hedging density ratio:** The density of hedging words (e.g., "maybe", "perhaps", "might", "not sure", "on second thought") in the later half of the run compared to the early half. A ratio above 2× scores above 0.0; a ratio at or above 4× scores 1.0.
-
-    **Score:** 1.0 on any retraction; a continuous value based on the late/early hedge ratio otherwise.
-
-    **Fires at:** score ≥ 0.6.
-
-    **Why it matters:** Rising hedging language is a leading indicator that the agent is losing confidence in its approach. Catching this early — before the agent backtracks through many steps — can save significant tool-call budget.
+    With fewer than 4 thoughts there is not enough history for a ratio, so the score falls back to raw hedge density.
   </Accordion>
 </AccordionGroup>
 
-## Composite score and the fire threshold
+## Composite score and the local fire threshold
 
-After running all six monitors, `evaluate_all` computes a weighted sum:
+`evaluate_all` returns the per-monitor `scores`, the weighted `total` (the composite), the list of `fired` monitors (those with score `>= 0.6`), and the resolved `weights`.
 
 ```
-composite = 0.35 × streak
-          + 0.15 × call_count
-          + 0.15 × edit_revert
-          + 0.15 × test_repeat
-          + 0.10 × diversity
-          + 0.10 × hedge
+composite = 0.35 * streak
+          + 0.15 * call_count
+          + 0.15 * edit_revert
+          + 0.15 * test_repeat
+          + 0.10 * diversity
+          + 0.10 * hedge
 ```
 
-The composite score is between 0 and 1. Individual monitors fire independently when their own score reaches the `DEFAULT_FIRE_THRESHOLD` of **0.6**. The composite score is used separately by the E1 gate (threshold: 0.15) and surfaced in the ReasonBlocks dashboard.
+You can override weights or the fire threshold per call:
+
+```python
+from reasonblocks import evaluate_all, DEFAULT_WEIGHTS
+
+result = evaluate_all(
+    steps,
+    weights={**DEFAULT_WEIGHTS, "streak": 0.45, "diversity": 0.05},
+    fire_threshold=0.5,
+)
+```
 
 ## How monitor results gate E1 retrieval
 
-When any monitor fires or the composite score exceeds 0.15, the E1 injection is permitted to query for instance-level guidance from your pattern library. When neither condition is met, the E1 query is skipped entirely.
-
-The gate also has a two-step lookback: if any monitor fired on either of the two previous steps, E1 remains open on the current step. This provides continuity of guidance across consecutive at-risk steps.
+The middleware consumes the **server-side** evaluation (not the local suite) to gate E1 retrieval. The two-step lookback keeps the gate open across consecutive at-risk steps.
 
 ```
-E1 allowed if:
+allow E1 if:
   any monitor fired this step
-  OR composite score this step > 0.15
+  OR composite this step > 0.15
   OR any monitor fired on the previous 2 steps
 ```
 
+If `MonitorSteeringInjection` is not configured at all, E1 is allowed unconditionally for backward compatibility.
+
 <Tip>
-  Monitor injection text is also subject to cooldowns and a per-run cap (5 injections maximum) to prevent over-injection on long runs. The cooldown is shorter when the FSM is in `SLOW` or `SKIP` state (every 2 steps) and longer in `FAST` state (every 5 steps).
+  Monitor injection text is also subject to the per-run cap (5) and FSM-state cooldowns (every 2 steps in `SLOW`/`SKIP`, every 3 in `NORMAL`, every 5 in `FAST`). These guardrails are independent of the E1 gate.
 </Tip>

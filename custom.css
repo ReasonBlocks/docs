@@ -1,0 +1,123 @@
+/* ==========================================================================
+   ReasonBlocks docs — design language overrides (mint theme)
+   Mirrors website/DESIGN.md: monochrome, IBM Plex Mono section labels +
+   headings, Inter body, narrow centered column.
+   --------------------------------------------------------------------------
+   Mintlify color contract (verified by reading compiled CSS):
+     • LIGHT mode pulls from --primary       (= docs.json colors.primary)
+     • DARK  mode pulls from --primary-light (= docs.json colors.light)
+       i.e. "primary-light" is the *lighter shade* of the brand color, used
+       in dark mode for visibility against dark backgrounds. Keep colors.light
+       bright; keep colors.primary dark.
+   ========================================================================== */
+
+:root { --rb-rule-subtle: rgba(0, 0, 0, 0.12); }
+.dark { --rb-rule-subtle: rgba(255, 255, 255, 0.10); }
+
+/* ---- Selection: brand-flipped ---- */
+::selection            { background: #000; color: #fff; }
+.dark ::selection      { background: #fff; color: #000; }
+
+/* ---- "Section label" pattern (per brand DESIGN.md) ----------------------
+   IBM Plex Mono, uppercase, tracking-widest, muted gray. Applied to every
+   non-body label: sidebar group headers, page eyebrow, top nav tabs,
+   TOC heading + items. Page links inside the sidebar (the list items) are
+   intentionally NOT included — they stay in Inter as body text.          */
+.sidebar-group-header,
+.sidebar-group-header h5,
+#sidebar-title,
+.eyebrow,
+#table-of-contents button,
+#table-of-contents button span,
+#table-of-contents-content a {
+  font-family: 'IBM Plex Mono', 'Courier New', monospace !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.08em !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+}
+
+.sidebar-group-header,
+.sidebar-group-header h5,
+#sidebar-title {
+  color: rgb(var(--gray-600)) !important;
+}
+.dark .sidebar-group-header,
+.dark .sidebar-group-header h5,
+.dark #sidebar-title {
+  color: rgb(var(--gray-400)) !important;
+}
+
+/* Top nav tabs (Documentation, API Reference) — mono with normal casing,
+   wider tracking. Brand uses caps for *labels* but tabs read as nav so
+   keep their case as-authored.                                          */
+.nav-tabs-item {
+  font-family: 'IBM Plex Mono', 'Courier New', monospace !important;
+  letter-spacing: 0.02em !important;
+  font-weight: 500 !important;
+}
+
+/* ---- Constrain content to a centered, narrow column ---------------------
+   Mint's default `lg:pl-[23.7rem] xl:w-[calc(100%-28rem)]` lets paragraphs
+   stretch wide and sit left-aligned on big screens. Pin a max-width and
+   center it, clamping the left margin so it never slides under the fixed
+   left sidebar (18rem).                                                  */
+@media (min-width: 1024px) {
+  #content-area {
+    max-width: 56rem !important;        /* 50rem reading + 2*3rem padding */
+    width: auto !important;             /* override mint's xl:w-[calc(...)] */
+    margin-left: max(20rem, calc((100% - 56rem) / 2)) !important;
+    margin-right: auto !important;
+    padding-left: 3rem !important;
+    padding-right: 3rem !important;
+  }
+}
+
+/* ---- Pagination footer: prev left, next right --------------------------
+   Mint already does flex + ml-auto for next, but ensure proper spacing
+   and that the borders above don't squeeze the row.                      */
+#pagination {
+  width: 100%;
+  padding-top: 2rem;
+  padding-bottom: 1.5rem;
+  margin-top: 3rem;
+  border-top: 1px solid var(--rb-rule-subtle);
+}
+#pagination > a:first-child  { margin-right: auto; justify-content: flex-start; }
+#pagination > a:last-child   { margin-left: auto;  justify-content: flex-end;   }
+
+/* ---- All boxy: kill border-radius everywhere (brand spec) ---------------
+   Mintlify's stock Tailwind utilities (rounded-xl, rounded-2xl, rounded-md,
+   rounded-full, etc.) sit on cards, callouts, code blocks, step badges,
+   the search bar, code-tab pills, send buttons, and more. The brand uses
+   sharp corners on every structural element, so override globally.       */
+*, *::before, *::after {
+  border-radius: 0 !important;
+}
+
+/* ---- Active / highlighted contrast safety in dark mode ------------------
+   When .bg-primary-light renders solid (near-white in dark mode), force
+   text/icon to use the dark background color so text stays visible.      */
+.dark .bg-primary-light:not([class*="bg-primary-light\/"]),
+.dark [class*=" bg-primary-light "]:not([class*="bg-primary-light\/"]) {
+  color: rgb(var(--background-dark)) !important;
+}
+
+/* Same protection in light mode for solid .bg-primary backgrounds. */
+.bg-primary:not([class*="bg-primary\/"]) {
+  color: rgb(var(--background-light));
+}
+
+/* ---- Scrollbars (operations dashboard parity) ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+.dark * {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+*::-webkit-scrollbar           { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb     { background: rgba(0, 0, 0, 0.18); border-radius: 4px; }
+.dark *::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); }
+*::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.32); }
+.dark *::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.32); }

@@ -1,0 +1,167 @@
+---
+title: "SteeringSession"
+description: "Framework-agnostic steering pipeline. Drives FSM scoring, monitor evaluation, E-trace retrieval, and live telemetry for the Claude Messages and OpenAI Agents integrations."
+---
+
+`SteeringSession` is the shared core that runs the per-step ReasonBlocks pipeline outside of LangChain's middleware lifecycle. The Claude Messages helper (`run_messages_agent_loop(..., session=...)`) and the OpenAI Agents `Model` adapter (`rb.openai_model(...)`) both wrap a session and call into it on each turn.
+
+Most users don't construct one directly — call [`rb.claude_messages_session()`](/api-reference/reasonblocks#claude_messages_session) or [`rb.openai_model(...)`](/api-reference/reasonblocks#openai_model) and the SDK builds it for you. Construct one yourself only when you're hand-rolling a third-party agent loop and want the same scoring + injection + telemetry shape.
+
+```python
+from reasonblocks import SteeringSession
+```
+
+## Construction
+
+```python
+SteeringSession(
+    *,
+    score_fn,
+    fsm,
+    state_manager,
+    injections,
+    model_routing=None,
+    emitter=None,
+    run_id="",
+    run_metadata=None,
+)
+```
+
+<ParamField path="score_fn" type="Callable[[str], float]" required>
+  Heuristic that returns a `[0, 1]` difficulty score for a thought string. Most callers pass `ReasonBlocks.score_step`.
+</ParamField>
+
+<ParamField path="fsm" type="DifficultyFSM" required>
+  The difficulty FSM. Construct with `DifficultyFSM(**fsm_thresholds)` to apply caller-supplied thresholds.
+</ParamField>
+
+<ParamField path="state_manager" type="TraceStateManager" required>
+  Per-run state tracker. Hosts the difficulty history, current FSM state, recorded `StepRecord` list, and total tokens.
+</ParamField>
+
+<ParamField path="injections" type="list[BaseInjection]" required>
+  The list of injection sources. Build with `reasonblocks.injections.create_injections(api, monitors, e_traces_enabled=...)`.
+</ParamField>
+
+<ParamField path="model_routing" type="dict[FSMState, str]" default="None">
+  Optional FSM-state-to-model-id map. The session surfaces an override on each `StepDecision`; the calling integration is responsible for actually swapping the model.
+</ParamField>
+
+<ParamField path="emitter" type="StreamingEmitter" default="None">
+  Optional live-telemetry emitter. When set, the session emits `run_start` once, a `step` event on each `end_step`, and `run_finish` on context exit.
+</ParamField>
+
+<ParamField path="run_id" type="string" default='state_manager.trace_id'>
+  Identifier for this run. Defaults to the trace id on `state_manager`.
+</ParamField>
+
+<ParamField path="run_metadata" type="dict[str, Any]" default="None">
+  Caller-supplied identifying tags (`agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `task_profile`, plus arbitrary extras). Forwarded into the `run_start` payload.
+</ParamField>
+
+## `begin_step`
+
+```python
+session.begin_step(
+    *,
+    thought,
+    action=None,
+    action_input=None,
+    observation=None,
+) -> StepDecision
+```
+
+Runs scoring, FSM transition, monitor evaluation, E-trace retrieval, and pattern rendering for one turn. Returns a [`StepDecision`](#stepdecision) carrying the resolved FSM state, pending injections, optional model override, the rendered injection text, and a fresh `StepLogEntry` to be finalized by `end_step`.
+
+Pass `thought=None` on the very first call (when no assistant turn has happened yet) to take the first-call path — only E3 universal injections fire, the FSM stays at `INIT`, and no scoring runs.
+
+## `end_step`
+
+```python
+session.end_step(
+    decision,
+    *,
+    model_id="",
+    tokens=0,
+    tool_calls=None,
+    latency_ms=0.0,
+    observation=None,
+)
+```
+
+Stamp `model_id`, `tokens`, `tool_calls`, and `latency_ms` onto the entry that `decision` carried, append it to `step_log`, and emit a live `step` telemetry event. Pass `observation=` if you only learned the tool result after the LLM call returned (it lands on the most recent `StepRecord`).
+
+## Lifecycle
+
+<ResponseField name="start()">
+  Emit the `run_start` telemetry event. Idempotent. Called automatically by `begin_step` on first use and by the context-manager protocol on `__enter__`.
+</ResponseField>
+
+<ResponseField name="finish(*, outcome_status='success')">
+  Emit the `run_finish` event. Idempotent. `mark_failure` and a propagating exception in `__exit__` both override the default `'success'`.
+</ResponseField>
+
+<ResponseField name="close(*, timeout=5.0)">
+  Stop the live telemetry worker thread and drain pending events. Safe to call multiple times. Skip it in normal use — the emitter thread is a daemon.
+</ResponseField>
+
+<ResponseField name="mark_failure(*, reason='failure')">
+  Override the default outcome on clean exit. Useful when the agent returned successfully but the caller knows the run logically failed.
+</ResponseField>
+
+## Properties
+
+<ResponseField name="step_log" type="list[StepLogEntry]">
+  Append-only list of finalized step entries. One entry per `end_step` call.
+</ResponseField>
+
+## Context manager
+
+`SteeringSession` is both a sync and async context manager:
+
+```python
+with SteeringSession(...) as session:
+    decision = session.begin_step(thought=...)
+    # ... call your LLM, then ...
+    session.end_step(decision, model_id=..., tokens=..., tool_calls=...)
+```
+
+`__exit__` fires `run_finish` with outcome `success` on a clean exit, `failure: <ExceptionType>` if an exception escapes, or whatever was set via `mark_failure`. It also calls `close()` to drain the emitter thread.
+
+## StepDecision
+
+Returned by `begin_step`. The integration's job is to read it, compose the system prompt, optionally swap the model, and pass it back to `end_step`.
+
+<ResponseField name="state" type="FSMState">
+  The resolved FSM state for this step.
+</ResponseField>
+
+<ResponseField name="pending" type="list[PendingInjection]">
+  All retrieved-but-not-yet-rendered injections (monitor steering + E1 + E2 + E3, gated by the same rules as the LangChain middleware).
+</ResponseField>
+
+<ResponseField name="model_override" type="Optional[str]">
+  The model id from `model_routing[state]` if mapped, else `None`. The integration uses this to actually swap the model.
+</ResponseField>
+
+<ResponseField name="entry" type="StepLogEntry">
+  The mutable per-step entry, populated through `end_step`.
+</ResponseField>
+
+<ResponseField name="rendered_injection_text" type="string">
+  The pre-rendered `[REASONBLOCKS]` body — every pending injection joined into one block. Empty string when nothing fired.
+</ResponseField>
+
+### compose_system_prompt
+
+```python
+decision.compose_system_prompt(base_system: str | None) -> str
+```
+
+Append `[REASONBLOCKS]\n{rendered_injection_text}` to `base_system` when injection text is present; otherwise return the base unchanged. Useful for plain-string system prompts (Claude Messages, OpenAI Agents). Returns an empty string if both `base_system` is empty and no injection fired.
+
+## Why a session and not a middleware
+
+LangChain has its own middleware lifecycle (`before_agent`, `before_model`, `wrap_model_call`, `after_agent`) — `ReasonBlocksMiddleware` hooks those. The Anthropic Messages API loop and the OpenAI Agents `Model` interface have different lifecycles, so reaching for an `AgentMiddleware` shape there would be awkward. `SteeringSession` is the same pipeline expressed as a plain Python object the integration calls into manually.
+
+The two paths are equivalent. Step entries from a session look the same as `step_log` entries from the middleware; telemetry payloads are identical; the FSM, monitors, and injection pipeline are bit-for-bit the same code.

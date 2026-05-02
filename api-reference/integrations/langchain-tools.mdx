@@ -1,9 +1,9 @@
 ---
-title: "LangChain tool factories for ReasonBlocks"
-description: "make_langchain_tools() returns LangChain tools for CodebaseMemory recall, storing findings, and impact analysis — pass the list directly to create_agent."
+title: "LangChain tool factories"
+description: "make_langchain_tools() returns LangChain @tool callables for CodebaseMemory recall, finding storage, and import-graph impact analysis."
 ---
 
-`make_langchain_tools` wires a `CodebaseMemory` instance and an optional `ImportGraph` to a list of LangChain `@tool`-decorated functions. Pass the returned list directly to `create_agent` or a LangGraph node alongside your own tools. The tools share the same `memory` and `graph` objects you provide, so findings stored during one step are immediately available on the next recall.
+`make_langchain_tools` wires a `CodebaseMemory` instance and an optional `ImportGraph` to a list of LangChain `@tool`-decorated callables. Pass the returned list directly into `create_agent(tools=...)` alongside your own tools. The factory shares the `memory` and `graph` objects you provide, so a finding stored in one step is available to the next recall in the same run.
 
 ```python
 from reasonblocks.integrations import make_langchain_tools
@@ -11,7 +11,7 @@ from reasonblocks.integrations import make_langchain_tools
 
 ## Installation
 
-The LangChain integration requires `langchain-core`. Install it alongside the ReasonBlocks SDK:
+The LangChain integration requires `langchain-core`:
 
 ```bash
 pip install reasonblocks langchain-core
@@ -32,99 +32,91 @@ make_langchain_tools(
 ) -> list
 ```
 
-Returns a list of LangChain `Tool` objects. The list length depends on which flags are enabled and which arguments are provided: up to three tools (`recall_findings`, `store_finding`, `impact_analysis`).
+Returns a list of LangChain `@tool` callables. The list contains up to three tools (`recall_findings`, `store_finding`, `impact_analysis`) depending on which arguments and flags you provide.
 
 ### Parameters
 
 <ParamField path="memory" type="CodebaseMemory | None" default="None">
-  The `CodebaseMemory` instance the tools read from and write to. Bind one instance per agent run. When `None`, both `recall_findings` and `store_finding` are omitted from the returned list regardless of `enable_recall` and `enable_store`.
+  The `CodebaseMemory` instance the tools read from and write to. When `None`, both `recall_findings` and `store_finding` are omitted from the returned list regardless of `enable_recall` and `enable_store`.
 </ParamField>
 
 <ParamField path="graph" type="ImportGraph | None" default="None">
-  Optional `ImportGraph` for the repository. When provided and `enable_impact` is `True`, an `impact_analysis` tool is added to the list. Pass `None` to omit the tool.
+  Optional `ImportGraph` for the repository. When provided and `enable_impact=True`, an `impact_analysis` tool is added.
 </ParamField>
 
 <ParamField path="recall_top_k" type="int" default="5">
-  Maximum number of findings to return from a single `recall_findings` call. Increasing this value returns more context but uses more tokens.
+  Maximum number of findings returned by a single `recall_findings` call.
 </ParamField>
 
 <ParamField path="recall_threshold" type="float" default="0.25">
-  Minimum similarity score (0–1) a finding must reach to be included in recall results. Lower values return more results with potentially lower relevance; higher values return fewer, higher-confidence results.
+  Minimum similarity score (0–1) a finding must reach to be included in recall results.
 </ParamField>
 
 <ParamField path="enable_recall" type="bool" default="true">
-  Include the `recall_findings` tool. Set to `False` to produce a write-only or impact-only tool set.
+  Include the `recall_findings` tool. Set to `False` to produce a write-only or impact-only tool set. Has no effect when `memory is None`.
 </ParamField>
 
 <ParamField path="enable_store" type="bool" default="true">
-  Include the `store_finding` tool. Set to `False` for read-only scenarios where the agent should not persist new observations.
+  Include the `store_finding` tool. Set to `False` for read-only scenarios. Has no effect when `memory is None`.
 </ParamField>
 
 <ParamField path="enable_impact" type="bool" default="true">
-  Include the `impact_analysis` tool when a `graph` is provided. Set to `False` to suppress it even when `graph` is not `None`.
+  Include the `impact_analysis` tool when a `graph` is provided.
 </ParamField>
 
 ### Returns
 
-<ResponseField name="tools" type="list[Tool]">
-  A list of LangChain `Tool` objects. Safe to concatenate with your own tool list: `tools=[*rb_tools, *your_tools]`.
+<ResponseField name="tools" type="list">
+  A list of LangChain `@tool`-decorated callables. Concatenate with your own tool list and pass to `create_agent`.
 </ResponseField>
 
 ## Tools
 
 ### `recall_findings(query)`
 
-Searches `CodebaseMemory` for findings relevant to `query`. The agent should call this **before** reading a file — if findings already exist, it can skip the file read entirely.
+Searches `CodebaseMemory` for findings relevant to `query`. The tool returns the same string that `CodebaseMemory.format_recall()` produces.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `query` | `str` | Natural-language description of what you are looking for |
 
-Returns a formatted string containing matching findings, or a message indicating nothing was found.
-
 ### `store_finding(content, file_path, finding_type)`
 
-Persists a new finding to `CodebaseMemory` so future agent runs can recall it. Store small, self-contained facts rather than long paragraphs.
+Persists a finding to `CodebaseMemory`. Returns `"stored (id=<fid>)"` on success or `"store failed"` on transport error.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `content` | `str` | — | The finding text (under 8 000 characters) |
-| `file_path` | `str` | `""` | Repo-relative path the finding is about, if applicable |
-| `finding_type` | `str` | `"note"` | Short tag: `bug`, `behavior`, `pattern`, or `note` |
-
-Returns `"stored (id=<fid>)"` on success or `"store failed"` on error.
+| `content` | `str` | — | The finding text (truncated to 8000 chars) |
+| `file_path` | `str` | `""` | Repo-relative path (truncated to 512 chars) |
+| `finding_type` | `str` | `"note"` | Short tag — `bug`, `behavior`, `pattern`, `note` (truncated to 64 chars) |
 
 ### `impact_analysis(file_path)`
 
-Queries the `ImportGraph` to return the dependents (files that import this file) and dependencies (files this file imports). Use it to judge the blast radius of a proposed change.
+Calls `ImportGraph.format_impact()` and returns the rendered string of dependents and dependencies.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `file_path` | `str` | Repo-relative path, e.g. `"pydantic/main.py"` |
 
-Returns a formatted string describing the file's dependents and dependencies.
-
 <Note>
-  `impact_analysis` is only present in the returned list when you pass a non-`None` `graph` **and** `enable_impact=True`. If you conditionally build your tool list, check `len(rb_tools)` rather than assuming a fixed index.
+  `impact_analysis` is only present when you pass a non-`None` `graph` **and** `enable_impact=True`. Check `len(rb_tools)` rather than assuming a fixed index if you build the list conditionally.
 </Note>
 
 ## Complete example
 
 <CodeGroup>
 
-```python LangChain agent
-from reasonblocks import ReasonBlocks
-from reasonblocks.codebase_memory import CodebaseMemory
-from reasonblocks.import_graph import ImportGraph
-from reasonblocks.integrations import make_langchain_tools
-from langchain.agents import create_openai_tools_agent, AgentExecutor
-from langchain_openai import ChatOpenAI
-
+```python LangChain 1.0 agent
 import pathlib
+from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
 
-rb     = ReasonBlocks(api_key="rb_live_...")
-memory = CodebaseMemory(codebase_id="my-repo")
-graph  = ImportGraph().build_from_files(
+from reasonblocks import CodebaseMemory, ImportGraph, ReasonBlocks
+from reasonblocks.integrations import make_langchain_tools
+
+rb = ReasonBlocks(api_key="rb_live_...")
+memory = CodebaseMemory(codebase_id="my-repo", api_key="rb_live_...")
+graph = ImportGraph().build_from_files(
     {str(p): p.read_text() for p in pathlib.Path("myrepo").rglob("*.py")}
 )
 
@@ -135,29 +127,39 @@ rb_tools = make_langchain_tools(
     recall_threshold=0.3,
 )
 
-llm   = ChatOpenAI(model="gpt-4o")
-agent = create_openai_tools_agent(llm, rb_tools + your_tools, prompt)
-executor = AgentExecutor(agent=agent, tools=rb_tools + your_tools)
+model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)
 
-with rb.middleware(run_id="run-1", agent_name="reviewer", task="review PR #42") as mw:
-    result = executor.invoke({"input": "Review the changes in PR #42"})
+with rb.middleware(
+    run_id="run-1",
+    agent_name="reviewer",
+    task="Review PR #42",
+    model="claude-haiku-4-5-20251001",
+    codebase_id="my-repo",
+) as mw:
+    agent = create_agent(
+        model=model,
+        tools=[*rb_tools, *your_tools],
+        system_prompt="You are a senior Python reviewer.",
+        middleware=[mw],
+    )
+    result = agent.invoke({"messages": [("user", "Review PR #42")]})
 ```
 
 ```python Read-only (no store)
 rb_tools = make_langchain_tools(
     memory,
     graph,
-    enable_store=False,   # agent cannot persist findings
+    enable_store=False,
 )
 ```
 
 ```python Without import graph
 rb_tools = make_langchain_tools(memory)
-# impact_analysis is not included — graph is None
+# impact_analysis is omitted — graph is None
 ```
 
 </CodeGroup>
 
 <Tip>
-  Call `make_langchain_tools` once per agent run, not once per application start. This ensures `memory` is bound to the correct run-scoped `CodebaseMemory` instance.
+  Build the tool list once per agent run, not once per process. The closure over `memory` and `graph` is fine to share across calls inside the same run, but each run typically wants its own `CodebaseMemory` instance scoped to the right `codebase_id`.
 </Tip>

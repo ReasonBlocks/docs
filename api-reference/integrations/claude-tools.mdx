@@ -1,9 +1,9 @@
 ---
-title: "Anthropic and Claude SDK tool factories"
+title: "Anthropic and Claude Agent SDK tool factories"
 description: "make_claude_tools() for the Anthropic Messages API and make_claude_agent_sdk_tools() for the Claude Agent SDK, both wiring CodebaseMemory and ImportGraph."
 ---
 
-The Claude integration module provides two factory functions targeting different Anthropic surfaces. `make_claude_tools` targets the low-level `anthropic` Python package and returns a `(tool_specs, dispatch)` tuple you wire into a manual `tool_use` loop. `make_claude_agent_sdk_tools` targets the higher-level `claude-agent-sdk` package and returns `@tool`-decorated async functions you pass directly to `query(...)`. Both factories expose the same `CodebaseMemory` and `ImportGraph` capabilities.
+The Claude integration module covers two Anthropic surfaces. `make_claude_tools` targets the `anthropic` Python package and returns `(tool_specs, dispatch)` for a manual `tool_use` loop. `make_claude_agent_sdk_tools` targets the higher-level `claude-agent-sdk` package and returns `@tool`-decorated async functions you pass directly to `query(tools=...)`. Both factories expose the same `CodebaseMemory` and `ImportGraph` capabilities. A `run_messages_agent_loop` helper drives the Messages API tool-use loop end-to-end.
 
 ```python
 from reasonblocks.integrations.claude_tools import (
@@ -12,6 +12,10 @@ from reasonblocks.integrations.claude_tools import (
     run_messages_agent_loop,
 )
 ```
+
+<Note>
+  Unlike `make_langchain_tools` and `make_openai_tools`, neither Claude factory exposes an `enable_recall` flag. `recall_findings` is always included whenever `memory` is set; only `store_finding` and `impact_analysis` are toggleable.
+</Note>
 
 <Tabs>
 
@@ -31,7 +35,7 @@ make_claude_tools(
 ) -> tuple[list[dict], Callable[[str, dict], str]]
 ```
 
-Returns a two-element tuple: a list of JSONSchema tool-spec dicts and a `dispatch` callable.
+Returns `(tool_specs, dispatch)` — a list of JSONSchema tool-spec dicts and a callable that executes a named tool.
 
 ### Parameters
 
@@ -40,23 +44,23 @@ Returns a two-element tuple: a list of JSONSchema tool-spec dicts and a `dispatc
 </ParamField>
 
 <ParamField path="graph" type="ImportGraph | None" default="None">
-  Optional `ImportGraph`. When provided and `enable_impact=True`, an `impact_analysis` spec is added to the tool list.
+  Optional `ImportGraph`. When provided and `enable_impact=True`, an `impact_analysis` spec is added.
 </ParamField>
 
 <ParamField path="recall_top_k" type="int" default="5">
-  Maximum number of findings returned by a single `recall_findings` call.
+  Maximum number of findings returned by `recall_findings`.
 </ParamField>
 
 <ParamField path="recall_threshold" type="float" default="0.25">
-  Minimum similarity score (0–1) for a finding to be included in recall results.
+  Minimum similarity score for recall results.
 </ParamField>
 
 <ParamField path="enable_store" type="bool" default="true">
-  Include the `store_finding` tool spec. Set to `False` for read-only scenarios.
+  Include the `store_finding` spec.
 </ParamField>
 
 <ParamField path="enable_impact" type="bool" default="true">
-  Include the `impact_analysis` tool spec when a `graph` is provided.
+  Include the `impact_analysis` spec when a `graph` is provided.
 </ParamField>
 
 ### Returns
@@ -66,22 +70,21 @@ Returns a two-element tuple: a list of JSONSchema tool-spec dicts and a `dispatc
 </ResponseField>
 
 <ResponseField name="dispatch" type="Callable[[str, dict], str]">
-  A callable `dispatch(tool_name, tool_input) -> str` that executes the named tool and returns its string result. Raises `KeyError` for unknown tool names so you can surface the model's error cleanly. Exceptions inside the tool handler are caught and returned as an error string rather than propagated.
+  A callable `dispatch(tool_name, tool_input) -> str` that executes the named tool and returns its string result. Raises `KeyError` for unknown tool names. Exceptions inside the handler are caught and returned as a `(tool '<name>' raised: ...)` error string rather than propagated.
 </ResponseField>
 
 ### Manual tool-use loop
 
 ```python
 import anthropic
-from reasonblocks.codebase_memory import CodebaseMemory
-from reasonblocks.import_graph import ImportGraph
+from reasonblocks import CodebaseMemory, ImportGraph
 from reasonblocks.integrations.claude_tools import make_claude_tools
 
 import pathlib
 
 client = anthropic.Anthropic()
-memory = CodebaseMemory(codebase_id="my-repo")
-graph  = ImportGraph().build_from_files(
+memory = CodebaseMemory(codebase_id="my-repo", api_key="rb_live_...")
+graph = ImportGraph().build_from_files(
     {str(p): p.read_text() for p in pathlib.Path("myrepo").rglob("*.py")}
 )
 
@@ -91,12 +94,11 @@ messages = [{"role": "user", "content": "Find the bug in auth/session.py"}]
 
 while True:
     resp = client.messages.create(
-        model="claude-opus-4-5",
+        model="claude-sonnet-4-20250514",
         max_tokens=4096,
         tools=tool_specs,
         messages=messages,
     )
-
     messages.append({"role": "assistant", "content": resp.content})
 
     if resp.stop_reason != "tool_use":
@@ -111,17 +113,12 @@ while True:
                 "tool_use_id": block.id,
                 "content": result,
             })
-
     messages.append({"role": "user", "content": tool_results})
-
-final_text = next(
-    (b.text for b in resp.content if b.type == "text"), ""
-)
 ```
 
 ## run_messages_agent_loop
 
-`run_messages_agent_loop` runs the full Anthropic Messages tool-use loop for you, handling every `tool_use` / `tool_result` turn automatically. Use it when you want batteries-included behavior without writing the loop yourself.
+`run_messages_agent_loop` runs the full Anthropic Messages tool-use loop, handling every `tool_use` / `tool_result` turn for you.
 
 ```python
 run_messages_agent_loop(
@@ -140,15 +137,15 @@ run_messages_agent_loop(
 ### Parameters
 
 <ParamField path="client" type="anthropic.Anthropic" required>
-  A synchronous `anthropic.Anthropic` client instance. The helper uses `client.messages.create` internally.
+  A synchronous `anthropic.Anthropic` client. The helper calls `client.messages.create` directly.
 </ParamField>
 
 <ParamField path="model" type="str" required>
-  The Anthropic model ID to use, e.g. `"claude-opus-4-5"` or `"claude-haiku-3-5"`.
+  The Anthropic model ID, e.g. `"claude-haiku-4-5-20251001"` or `"claude-sonnet-4-20250514"`.
 </ParamField>
 
 <ParamField path="messages" type="list[dict]" required>
-  Initial message list in Anthropic format. Typically `[{"role": "user", "content": "..."}]`. The helper appends assistant and tool-result turns in place; pass a copy if you want to preserve the original list.
+  Initial message list in Anthropic format. The helper appends assistant and tool-result turns in place; pass a copy if you want to preserve the original.
 </ParamField>
 
 <ParamField path="tool_specs" type="list[dict]" required>
@@ -160,11 +157,11 @@ run_messages_agent_loop(
 </ParamField>
 
 <ParamField path="system" type="str" default='""'>
-  Optional system prompt. Passed as the `system` parameter to `client.messages.create` when non-empty.
+  Optional system prompt. Forwarded to `client.messages.create` only when non-empty.
 </ParamField>
 
 <ParamField path="max_steps" type="int" default="40">
-  Maximum number of `client.messages.create` calls before the loop exits with `stop_reason="max_steps"`. Prevents runaway loops from consuming your API quota.
+  Maximum number of `client.messages.create` calls before the loop exits with `stop_reason="max_steps"`.
 </ParamField>
 
 <ParamField path="max_tokens" type="int" default="4096">
@@ -174,31 +171,34 @@ run_messages_agent_loop(
 ### Return value
 
 <ResponseField name="final_text" type="str">
-  The concatenated text from the last assistant turn that did not contain a `tool_use` block. Empty string if the run ended via `max_steps` with no text output.
+  Concatenated text from the last assistant turn that emitted text. Empty string when the loop exits via `max_steps` with no text output.
 </ResponseField>
 
 <ResponseField name="messages" type="list[dict]">
-  The full message history including all assistant turns and tool-result turns appended during the loop. Useful for continuing the conversation or for debugging.
+  Full message history including assistant turns and tool-result turns appended during the loop.
 </ResponseField>
 
 <ResponseField name="stop_reason" type="str">
-  The stop reason from the final API call, or `"max_steps"` if the loop was terminated by the step limit. Common values: `"end_turn"`, `"max_steps"`, `"stop_sequence"`.
+  Stop reason from the final API call, or `"max_steps"` if the loop hit the step limit. Common values: `"end_turn"`, `"max_steps"`, `"stop_sequence"`.
 </ResponseField>
 
 <ResponseField name="tool_calls" type="list[tuple[str, dict, str]]">
-  Every tool call made during the loop as `(tool_name, tool_input, result)` tuples, in execution order. Useful for auditing what the agent did.
+  Every tool call as `(tool_name, tool_input, result)` in execution order.
 </ResponseField>
 
 ### Example
 
 ```python
-from reasonblocks.integrations.claude_tools import make_claude_tools, run_messages_agent_loop
+from reasonblocks.integrations.claude_tools import (
+    make_claude_tools,
+    run_messages_agent_loop,
+)
 
 tool_specs, dispatch = make_claude_tools(memory, graph)
 
 outcome = run_messages_agent_loop(
     client,
-    model="claude-opus-4-5",
+    model="claude-sonnet-4-20250514",
     messages=[{"role": "user", "content": "Audit the payment module"}],
     tool_specs=tool_specs,
     dispatch=dispatch,
@@ -208,7 +208,7 @@ outcome = run_messages_agent_loop(
 
 print(outcome["final_text"])
 for name, inp, result in outcome["tool_calls"]:
-    print(f"  {name}({inp}) → {result[:80]}")
+    print(f"  {name}({inp}) -> {result[:80]}")
 ```
 
 </Tab>
@@ -229,7 +229,7 @@ make_claude_agent_sdk_tools(
 ) -> list
 ```
 
-Returns a list of `@tool`-decorated async functions for the `claude-agent-sdk` package. The tool descriptors are in the shape `ClaudeSDKClient` / `query(...)` expects.
+Returns `@tool`-decorated async callables for the `claude-agent-sdk` package. The decorator returns SDK-specific descriptors, so the import is deferred — callers without the package never pay for it.
 
 <Warning>
   This function imports from `claude_agent_sdk` at call time. If the package is not installed, it raises `ImportError` with an install hint. Install with `pip install claude-agent-sdk`.
@@ -246,15 +246,15 @@ Returns a list of `@tool`-decorated async functions for the `claude-agent-sdk` p
 </ParamField>
 
 <ParamField path="recall_top_k" type="int" default="5">
-  Maximum number of findings returned per `recall_findings` call.
+  Maximum number of findings per `recall_findings` call.
 </ParamField>
 
 <ParamField path="recall_threshold" type="float" default="0.25">
-  Minimum similarity score (0–1) for recall results.
+  Minimum similarity score for recall results.
 </ParamField>
 
 <ParamField path="enable_store" type="bool" default="true">
-  Include the `store_finding` tool. Set to `False` for read-only runs.
+  Include the `store_finding` tool.
 </ParamField>
 
 <ParamField path="enable_impact" type="bool" default="true">
@@ -264,21 +264,20 @@ Returns a list of `@tool`-decorated async functions for the `claude-agent-sdk` p
 ### Returns
 
 <ResponseField name="tools" type="list">
-  A list of `@tool`-decorated async callables. Pass directly to `query(tools=rb_tools + your_tools)`.
+  A list of `@tool`-decorated async callables for `query(tools=...)` or `ClaudeSDKClient`.
 </ResponseField>
 
 ### Example
 
 ```python
 from claude_agent_sdk import query
-from reasonblocks.codebase_memory import CodebaseMemory
-from reasonblocks.import_graph import ImportGraph
+from reasonblocks import CodebaseMemory, ImportGraph
 from reasonblocks.integrations.claude_tools import make_claude_agent_sdk_tools
 
 import pathlib
 
-memory = CodebaseMemory(codebase_id="my-repo")
-graph  = ImportGraph().build_from_files(
+memory = CodebaseMemory(codebase_id="my-repo", api_key="rb_live_...")
+graph = ImportGraph().build_from_files(
     {str(p): p.read_text() for p in pathlib.Path("myrepo").rglob("*.py")}
 )
 
@@ -286,7 +285,7 @@ rb_tools = make_claude_agent_sdk_tools(memory, graph)
 
 async for message in query(
     prompt="Find and explain the auth bug",
-    tools=rb_tools + your_tools,
+    tools=[*rb_tools, *your_tools],
 ):
     print(message)
 ```
@@ -297,10 +296,8 @@ async for message in query(
 
 ## Tools available in both factories
 
-Both `make_claude_tools` and `make_claude_agent_sdk_tools` expose the same three tools:
-
 | Tool | Always included? | Description |
-|------|-----------------|-------------|
-| `recall_findings(query)` | Yes (when `memory` set) | Search `CodebaseMemory` for findings matching a natural-language query |
-| `store_finding(content, file_path, finding_type)` | When `enable_store=True` | Persist a new finding to `CodebaseMemory` |
-| `impact_analysis(file_path)` | When `graph` is set and `enable_impact=True` | Return dependents and dependencies for a repo file |
+|------|------------------|-------------|
+| `recall_findings(query)` | Yes (when `memory` is set) | Search `CodebaseMemory` for findings matching a query |
+| `store_finding(content, file_path, finding_type)` | When `enable_store=True` | Persist a finding |
+| `impact_analysis(file_path)` | When `graph` is set and `enable_impact=True` | Return dependents and dependencies |

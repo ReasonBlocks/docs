@@ -105,7 +105,7 @@ for r in results:
 </ParamField>
 
 <ResponseField name="return" type="list[dict]">
-  A list of finding dicts ordered by descending relevance score. Each dict contains:
+  A list of finding dicts ordered by descending relevance score. The dicts are passed through from the rb-api response; the fields below are the ones the SDK and tool wrappers rely on. Additional server-side fields (e.g. `metadata`, timestamps) may be present and are forwarded as-is.
 
   <Expandable title="Result dict fields">
     <ResponseField name="content" type="string">
@@ -119,6 +119,9 @@ for r in results:
     </ResponseField>
     <ResponseField name="score" type="number">
       Cosine similarity score between 0 and 1. Higher means more relevant.
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      Optional. The dict you passed to `store(metadata=...)`, when present.
     </ResponseField>
   </Expandable>
 </ResponseField>

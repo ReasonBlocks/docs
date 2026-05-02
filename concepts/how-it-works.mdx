@@ -1,61 +1,101 @@
 ---
-title: "How ReasonBlocks works"
-description: "An overview of the middleware pipeline: how ReasonBlocks scores each agent step, runs health monitors, injects steering guidance, and routes the model call."
+title: "How it works"
+description: "The middleware lifecycle: run_start, before_model scoring and FSM transition, server-side monitor evaluation, E-trace gating, model routing, system-message rendering, and run_finish."
 ---
 
-ReasonBlocks attaches to your agent as a LangChain middleware. On every step it evaluates the agent's current reasoning, decides whether intervention is needed, assembles any guidance into the system message, and then lets the model call proceed. From your agent's perspective nothing changes — it still sees one system message and produces one response. ReasonBlocks does its work invisibly in the space between those two events.
+This page describes the steering pipeline that `rb.middleware()` attaches to a LangChain 1.0 agent. The OpenAI Agents and Claude Agent SDK integrations share the codebase memory toolset and (where applicable) telemetry, but the FSM scoring, monitor evaluation, E-trace injection, and model routing described below currently live in the LangChain middleware path.
 
-## The two hook points
+The middleware runs four lifecycle hooks. On every step it scores the agent's last thought, advances the difficulty FSM, asks rb-api whether the trajectory needs steering, retrieves up to three tiers of E-traces, and assembles any guidance into the system message before the model call. Your agent sees one system message in and one response out. The middleware does its work in the gap.
 
-ReasonBlocks operates through two hooks that the middleware framework fires on every agent step.
+## The four hook points
 
-**`before_model`** runs before the LLM call. It scores the agent's latest thought, advances the difficulty FSM, runs health monitors, and queues any E-trace injections that are warranted.
-
-**`wrap_model_call`** runs immediately before and after the LLM call. It applies model routing (swapping in a stronger or lighter model based on FSM state), renders queued injections into the system message, issues the call, and records token usage and latency.
+| Hook | When | What it does |
+|---|---|---|
+| `before_agent` | Once, at run start | Emits the `run_start` telemetry event. |
+| `before_model` | Before every LLM call | Scores the last thought, advances the FSM, evaluates monitors via rb-api, queues E-trace injections. |
+| `wrap_model_call` | Around every LLM call | Applies model routing, renders queued injections into the system message, calls the handler, records tokens and latency. |
+| `after_agent` | Once, at clean return | Emits the `run_finish` telemetry event. Exception paths emit it from `__exit__`. |
 
 ## Step-by-step lifecycle
 
 <Steps>
+  <Step title="run_start">
+    `before_agent` fires once and emits a `run_start` event with `run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `task_profile`, and any caller-provided `metadata`. Telemetry is fire-and-forget — the streaming worker is a daemon thread.
+  </Step>
+
   <Step title="First call — E3 only">
-    On the very first agent step there is no prior thought to score, so ReasonBlocks skips difficulty scoring and the FSM stays at `INIT`. Only **E3 injections** (universal standing rules) are retrieved and appended to the system message. This primes the agent with baseline guidance before it has generated any output.
+    On the very first agent step there is no prior thought to score, so the FSM stays at `INIT`. Only `E3Injection` runs (universal standing rules, scroll-all, up to 32 patterns). It fires exactly once per run and its result is queued for the upcoming model call.
   </Step>
 
   <Step title="Score the thought">
-    From step two onward, `before_model` extracts the last assistant message and calls `score_step` to produce a difficulty score between 0 and 1. The score combines hedging density, response length, error language, and entity density into a single float.
+    From step two onward, `before_model` extracts the last `AIMessage` content and calls `ReasonBlocks.score_step`. The heuristic combines hedging density, response length, error language, and entity density into a float in `[0, 1]`, squashed through a sigmoid. This score is heuristic-only — it will be replaced by a Pilot model later.
   </Step>
 
   <Step title="Advance the FSM">
-    The difficulty score is fed to the difficulty FSM alongside the recent difficulty history. The FSM transitions between `NORMAL`, `FAST`, `SLOW`, and `SKIP` states based on whether scores are consistently low, high, or extreme. The resulting state controls everything that follows.
+    The score is appended to the difficulty history and fed to `DifficultyFSM.transition`. The FSM moves between `NORMAL`, `FAST`, `SLOW`, and `SKIP` based on whether the recent window is consistently low, high, or extreme. See [FSM states](/concepts/fsm-states) for the transition rules.
   </Step>
 
-  <Step title="Run health monitors">
-    Six monitors evaluate the accumulated step trace for signs of trouble — repeated actions, edit thrashing, stalled test loops, collapsed tool exploration, and rising hedging language. Each monitor produces a score in [0, 1]; any monitor at or above **0.6** is considered fired.
+  <Step title="Evaluate monitors server-side">
+    `MonitorSteeringInjection.retrieve` posts the current trace to rb-api's `POST /monitors/evaluate`. The server runs the trajectory monitor suite under the configured `task_profile`, applies the two-path gate, optionally falls back to an `E2` lookup, and returns `{inject, intervention_text, fired, scores, composite, failure_type, intervention_source}`. When `inject` is true and the text is new, the middleware queues the rendered intervention text as a `PendingInjection`.
+
+    Per-run guardrails are enforced client-side after the server's decision: a hard cap of **5 monitor injections per run**, plus state-dependent cooldowns (every **2** steps in `SLOW`/`SKIP`, every **3** in `NORMAL`, every **5** in `FAST`).
   </Step>
 
-  <Step title="Gate and queue injections">
-    - **E1** (instance-level guidance) is only queried when at least one monitor has fired or the composite monitor score exceeds 0.15. This prevents unnecessary pattern-store lookups on healthy runs.
-    - **E2** (pattern-level guidance) retrieves up to two patterns keyed on the current failure mode classification, when available.
-    - **E3** (universal rules) fires only once per run, on the first call.
-    - **FAST state** skips the entire E-trace pipeline — no pattern-store lookups, no embeddings — because the agent is making consistent progress and intervention would only add latency.
+  <Step title="Gate E1 retrieval">
+    Before `E1Injection` queries the pattern store, a client-side gate checks the recent monitor history:
+
+    ```
+    allow E1 if:
+      current_eval.fired is non-empty
+      OR current_eval.composite > 0.15
+      OR any monitor fired on either of the previous 2 steps
+    ```
+
+    If no monitor has ever run, E1 is allowed unconditionally for backward compatibility.
+  </Step>
+
+  <Step title="Retrieve E-traces">
+    With the gate decided, the middleware runs the remaining injections in order:
+
+    - **`E1Injection`** — instance-level pattern, customer-scoped, `top_k=1`. Capped at `max_calls=1` per run.
+    - **`E2Injection`** — pattern-level guidance, `top_k=2`, narrowed by `failure_type` if the monitor evaluation produced one. Capped at `max_calls=1` per run.
+    - **`E3Injection`** — already fired on step 0; subsequent calls skip it.
+
+    In `FAST` state the entire E-trace pipeline is bypassed (no Qdrant query, no embeddings). Monitors still run because loop detection matters most when the agent is moving quickly and might miss that it's looping.
   </Step>
 
   <Step title="Route the model">
-    In `wrap_model_call`, the FSM state is checked against your `model_routing` configuration. If the current state maps to a different model (for example `SLOW` → a stronger model), the request is transparently overridden before the call is issued.
+    `wrap_model_call` checks the current FSM state against `model_routing`. If a mapping exists, the request is overridden via `request.override(model=...)` before the handler is called. Routing happens before injection rendering so the format-routing layer sees the final post-routing model id.
   </Step>
 
-  <Step title="Inject into the system message">
-    Queued injections are rendered into a single text block and appended to the system message as a `[REASONBLOCKS]` section. The base system prompt receives an Anthropic `cache_control` marker so it hits the prompt cache on every step; the injected block rides uncached so its varying content never busts that cache.
+  <Step title="Render injections into the system message">
+    Pending injections are rendered (text passes through; `(tier, fields)` go through `render_pattern(tier, model_id, fields)`) and joined with blank lines. The base system prompt is wrapped in a content block with `cache_control: {"type": "ephemeral"}` so Anthropic's prompt cache hits across steps. The rendered guidance rides as a separate uncached block prefixed with `[REASONBLOCKS]` so its varying content does not bust the base cache key.
+
+    `cache_control` is ignored on non-Anthropic providers, so this is safe under OpenAI or Gemini models.
   </Step>
 
   <Step title="Call the model and record telemetry">
-    The model call proceeds with the updated request. After the response arrives, ReasonBlocks records token usage, latency, tool calls, and the FSM state for the step. If live streaming is enabled, a step event is emitted to the ReasonBlocks API so the dashboard reflects the run in real time.
+    The handler runs. After the response arrives, the middleware extracts the `AIMessage`, reads `usage_metadata` for token counts, captures tool-call names, and stamps the `StepLogEntry` with `model_id`, `tokens`, `latency_ms`, `injections`, `intervention_texts`, `monitors_fired`, and `failure_type`. If `live_streaming_enabled` is `True`, a `step` event is emitted to rb-api.
+  </Step>
+
+  <Step title="run_finish">
+    `after_agent` fires on a clean return and emits `run_finish` with outcome `"success"` (or whatever was set via `mark_failure`). When the middleware is used as a context manager, `__exit__` records exception types in the outcome string and calls `close()` to drain the streaming worker.
   </Step>
 </Steps>
 
 ## What the agent sees
 
-Your agent's message history is never modified. Injections appear only as an additional block inside the system message, formatted as `[REASONBLOCKS]\n<guidance>`. This means the agent's conversation turns remain clean and the model does not treat steering guidance as a prior assistant or user message.
+The agent's message history is never modified. Steering appears only as an additional content block inside the system message, formatted as `[REASONBLOCKS]\n<rendered guidance>`. The agent's conversation turns stay clean.
 
 <Note>
-  The `[REASONBLOCKS]` block is rebuilt fresh on every step. Only injections that are relevant to the current step are included — there is no cumulative accumulation of guidance across turns.
+  The `[REASONBLOCKS]` block is rebuilt fresh on every step and contains only the injections relevant to that step. There is no cumulative accumulation across turns.
 </Note>
+
+## Local vs server-side monitors
+
+The SDK ships two monitor surfaces; do not conflate them.
+
+- **Server-side monitor evaluation** — `POST /monitors/evaluate` — drives the steering intervention you see appended to the system message. This is the path described above.
+- **Local monitor suite** in `reasonblocks/monitors/suite.py` — six pure-Python heuristics with weighted aggregation. Used by `TokenSavingMiddleware` for early-exit decisions and by `SQLiteMonitorSink` for offline trace inspection. **It does not drive the steering injection.**
+
+See [Monitors](/concepts/monitors) for the full breakdown of both surfaces.

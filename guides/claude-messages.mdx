@@ -1,0 +1,131 @@
+---
+title: "Use ReasonBlocks with the Anthropic Messages API"
+description: "Drive run_messages_agent_loop with a SteeringSession to run the full FSM + monitor + E-trace + model-routing pipeline against Claude Messages."
+---
+
+`run_messages_agent_loop` is a batteries-included driver for Anthropic's Messages tool-use loop. Pair it with a `SteeringSession` from `rb.claude_messages_session()` to run the full ReasonBlocks pipeline at every turn — FSM step scoring, server-side monitor steering, E1 / E2 / E3 injection, model routing, and live telemetry — all without LangChain in the dependency graph.
+
+This is the parity path with the LangChain middleware against an Anthropic-native client.
+
+## Walkthrough
+
+<Steps>
+  <Step title="Install">
+    ```bash
+    pip install reasonblocks anthropic
+    ```
+  </Step>
+
+  <Step title="Initialize the client and an Anthropic SDK client">
+    ```python
+    import os
+    from anthropic import Anthropic
+    from reasonblocks import ReasonBlocks
+
+    rb = ReasonBlocks(
+        api_key=os.environ["REASONBLOCKS_API_KEY"],
+        model_routing={
+            "FAST": "anthropic:claude-haiku-4-5-20251001",
+            "SLOW": "anthropic:claude-sonnet-4-20250514",
+        },
+    )
+    client = Anthropic()
+    ```
+
+    Model identifiers in `model_routing` may use the LangChain-style `"anthropic:..."` prefix for parity; the loop strips it before forwarding to the Messages API. Bare slugs like `"claude-haiku-4-5-20251001"` work too.
+  </Step>
+
+  <Step title="Build the codebase memory tools">
+    `make_claude_tools` returns Anthropic-shaped tool specs plus a `dispatch` callable that runs the tools when the agent invokes them.
+
+    ```python
+    from reasonblocks import CodebaseMemory
+    from reasonblocks.integrations.claude_tools import make_claude_tools
+
+    memory = CodebaseMemory(
+        codebase_id="my-org/my-repo",
+        api_key=os.environ["REASONBLOCKS_API_KEY"],
+    )
+
+    tool_specs, dispatch = make_claude_tools(memory)
+    ```
+
+    See [Claude tools reference](/api-reference/integrations/claude-tools) for the full factory signature.
+  </Step>
+
+  <Step title="Create a steering session and run the loop">
+    `rb.claude_messages_session(...)` builds a [`SteeringSession`](/api-reference/steering-session) wired with the same FSM, monitors, and injections that `rb.middleware()` would produce. Pass it through `run_messages_agent_loop(..., session=...)`.
+
+    ```python
+    from reasonblocks.integrations.claude_tools import run_messages_agent_loop
+
+    with rb.claude_messages_session(
+        agent_name="reviewer",
+        task="review PR #42",
+        model="claude-haiku-4-5-20251001",
+        codebase_id="my-org/my-repo",
+    ) as session:
+        outcome = run_messages_agent_loop(
+            client,
+            model="claude-haiku-4-5-20251001",
+            messages=[{"role": "user", "content": "Review the changes in PR #42."}],
+            tool_specs=tool_specs,
+            dispatch=dispatch,
+            system="You are a senior code reviewer.",
+            session=session,
+        )
+
+    print(outcome["final_text"])
+    ```
+
+    On every turn the loop:
+
+    1. Pulls the last assistant text out of the message history (the "thought").
+    2. Calls `session.begin_step(...)` to score it, advance the FSM, and run server-side monitor evaluation + E-trace retrieval.
+    3. Appends a `[REASONBLOCKS]` block to `system` if anything fired.
+    4. Strips any `provider:` prefix from the routed model id.
+    5. Calls `client.messages.create(...)`.
+    6. Calls `session.end_step(...)` with the response's token count, tool-call names, and per-call latency.
+  </Step>
+
+  <Step title="Inspect the step log">
+    After the run, read `session.step_log` for per-step difficulty, FSM state, monitors fired, injection text, model id used, tokens, and latency.
+
+    ```python
+    for entry in session.step_log:
+        print(entry.as_dict())
+    ```
+  </Step>
+</Steps>
+
+## What `run_messages_agent_loop` returns
+
+```python
+{
+    "final_text": "<the agent's final text response>",
+    "messages":   [...],   # full message history including tool_use / tool_result turns
+    "stop_reason": "end_turn" | "max_steps" | "...",
+    "tool_calls": [(name, input, result), ...],
+}
+```
+
+When `session=` is passed, the same data is mirrored into `session.step_log` per step.
+
+## Without steering
+
+`session=None` (the default) runs the loop as a plain Messages API driver — no scoring, no monitors, no injection. This was the original behavior and remains supported for callers who only want the tool-use convenience.
+
+## Streaming
+
+Streaming responses are not supported in the first cut. `client.messages.create` is called synchronously per turn. If you need streaming, drop down to the LangChain middleware (which supports streaming responses through LangChain's runtime) or hand-roll the loop and call `session.begin_step` / `session.end_step` yourself.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Claude tools reference" icon="wrench" href="/api-reference/integrations/claude-tools">
+    `make_claude_tools` and `run_messages_agent_loop` API surface.
+  </Card>
+  <Card title="SteeringSession reference" icon="layer-group" href="/api-reference/steering-session">
+    The shared core driving every framework integration.
+  </Card>
+</CardGroup>

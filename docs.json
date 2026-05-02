@@ -1,17 +1,25 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "name": "ReasonBlocks",
-  "theme": "luma",
-  "favicon": "https://media.brand.dev/62db008c-64df-4c93-9e5d-20dfb1e4507f.png",
-  "colors": {
-    "primary": "#7c7c7c",
-    "light": "#080808",
-    "dark": "#a4a4a4"
+  "theme": "mint",
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/rb-light.png",
+    "dark": "/logo/rb-dark.png"
   },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/ReasonBlocks/sdk"
+  "colors": {
+    "primary": "#000000",
+    "light": "#fafafa",
+    "dark": "#000000"
+  },
+  "fonts": {
+    "heading": {
+      "family": "IBM Plex Mono",
+      "weight": 700
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400
     }
   },
   "navigation": {
@@ -20,7 +28,7 @@
         "tab": "Documentation",
         "groups": [
           {
-            "group": "Get Started",
+            "group": "Getting Started",
             "pages": [
               "introduction",
               "quickstart",
@@ -28,7 +36,7 @@
             ]
           },
           {
-            "group": "Core Concepts",
+            "group": "Concepts",
             "pages": [
               "concepts/how-it-works",
               "concepts/fsm-states",
@@ -37,28 +45,28 @@
             ]
           },
           {
-            "group": "Guides",
+            "group": "Using ReasonBlocks",
             "pages": [
               "guides/langchain",
               "guides/openai-agents",
+              "guides/claude-messages",
+              "guides/claude-agent-sdk",
               "guides/model-routing",
               "guides/codebase-memory",
-              "guides/token-saving"
-            ]
-          },
-          {
-            "group": "Configuration",
-            "pages": [
+              "guides/token-saving",
               "configuration/reasonblocks-config",
               "configuration/monitor-profiles",
-              "configuration/advanced"
+              "configuration/advanced",
+              "troubleshooting/faq",
+              "troubleshooting/common-issues"
             ]
           },
           {
-            "group": "Troubleshooting",
+            "group": "Connectors and sync",
             "pages": [
-              "troubleshooting/faq",
-              "troubleshooting/common-issues"
+              "api-reference/integrations/langchain-tools",
+              "api-reference/integrations/claude-tools",
+              "api-reference/integrations/openai-tools"
             ]
           }
         ]
@@ -70,6 +78,7 @@
             "group": "SDK Classes",
             "pages": [
               "api-reference/reasonblocks",
+              "api-reference/steering-session",
               "api-reference/codebase-memory",
               "api-reference/import-graph",
               "api-reference/token-saving-middleware"
@@ -81,14 +90,6 @@
               "api-reference/types/fsm-state",
               "api-reference/types/step-record",
               "api-reference/types/e-trace"
-            ]
-          },
-          {
-            "group": "Integrations",
-            "pages": [
-              "api-reference/integrations/langchain-tools",
-              "api-reference/integrations/claude-tools",
-              "api-reference/integrations/openai-tools"
             ]
           }
         ]

@@ -1,0 +1,14 @@
+# Claude Code / agent tooling
+.agents/
+.claude/
+skills-lock.json
+
+# Mintlify scratch files
+.preview-*
+.served-*
+.css[0-9].css
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp

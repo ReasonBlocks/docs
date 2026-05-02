@@ -94,6 +94,10 @@ agent = create_agent(
   The number of words per window passed to the classifier in a single call. Larger windows give the classifier more context but cost more tokens per call.
 </ParamField>
 
+<ParamField path="perplexity_min_content_words" type="integer" default="30">
+  Texts shorter than this many words are returned unchanged — the classifier overhead is not worth it for short messages. Applies per-message when deciding whether to invoke the classifier at all.
+</ParamField>
+
 ---
 
 ## Stats attribute

@@ -1,108 +1,103 @@
 ---
-title: "Get started with ReasonBlocks in five minutes"
-description: "Install the SDK, initialize ReasonBlocks, and add middleware to your LangChain agent. Your first instrumented run takes about five minutes to set up."
+title: "Quickstart"
+description: "Install the SDK, create a ReasonBlocks client, and add the middleware to a LangChain agent."
 ---
 
-This guide walks you through adding ReasonBlocks to an existing LangChain agent. By the end, your agent will have step scoring, E-trace injection, and health monitoring active on every run, and each run will appear in the ReasonBlocks dashboard.
+This guide adds ReasonBlocks to a LangChain 1.0 agent. By the end, your agent has step scoring, server-side monitor evaluation, and E-trace injection on every run, and each run streams to the ReasonBlocks dashboard.
+
+<Note>
+  ReasonBlocks supports three agent frameworks: LangChain, the OpenAI Agents SDK, and the Claude Agent SDK / Claude Messages API. The full steering pipeline (FSM + monitors + E-traces + model routing) ships as a LangChain middleware, so this quickstart is LangChain-shaped. For the other two, see the [OpenAI Agents guide](/guides/openai-agents) and the [Claude Agent SDK guide](/guides/claude-agent-sdk) — both ship telemetry hooks (where applicable) and the codebase memory tool factories.
+</Note>
 
 <Steps>
   <Step title="Install the SDK">
-    Install ReasonBlocks from PyPI. It requires Python 3.10 or later.
+    Install ReasonBlocks from PyPI. Python 3.10 or later is required.
 
     ```bash
     pip install reasonblocks
     ```
 
-    ReasonBlocks depends on `langchain>=1.0` and `httpx>=0.27`. These are installed automatically.
+    `langchain>=1.0` and `httpx>=0.27` are installed automatically.
   </Step>
 
   <Step title="Get your API key">
-    Log in to the [ReasonBlocks dashboard](https://app.reasonblocks.com) and copy your API key from the **Quickstart** page. It starts with `rb_live_`.
+    Log in to the [ReasonBlocks dashboard](https://app.reasonblocks.com) and copy your API key from the **Quickstart** page. Keys start with `rb_live_`.
 
-    Set it as an environment variable so you don't hardcode it in your source:
+    The SDK does not read environment variables for the key — your code passes it to the constructor explicitly. Storing it in an environment variable is still the recommended pattern; just read it yourself:
 
     ```bash
     export REASONBLOCKS_API_KEY=rb_live_...
     ```
 
     <Tip>
-      The dashboard's Quickstart page also shows your `org_id` and `project_id` next to a copy-pasteable snippet — the fastest way to get those values for tagging runs.
+      The dashboard's Quickstart page also shows your `org_id` and `project_id` next to a copy-pasteable snippet.
     </Tip>
   </Step>
 
-  <Step title="Initialize ReasonBlocks">
-    Import and initialize the `ReasonBlocks` client. Pass your API key directly or read it from the environment.
+  <Step title="Initialize the client">
+    Import `ReasonBlocks` and pass the API key. The client is reusable across runs — create it once at startup, then call `rb.middleware()` once per agent invocation.
 
-    <CodeGroup>
-
-    ```python Pass API key directly
-    from reasonblocks import ReasonBlocks
-
-    rb = ReasonBlocks(api_key="rb_live_...")
-    ```
-
-    ```python Read from environment
+    ```python
     import os
     from reasonblocks import ReasonBlocks
 
     rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
     ```
-
-    </CodeGroup>
-
-    The `ReasonBlocks` object is reusable across runs. Create it once at startup, then call `rb.middleware()` once per agent invocation.
   </Step>
 
-  <Step title="Add middleware to your agent">
-    Pass `rb.middleware()` in the `middleware` list when you create your agent. No other changes are required.
+  <Step title="Add the middleware to your agent">
+    Pass `rb.middleware()` in the `middleware` list when you create your agent.
 
     ```python
     from langchain.agents import create_agent
 
     agent = create_agent(
-        model="anthropic:claude-sonnet-4-20250514",
+        model="anthropic:claude-haiku-4-5-20251001",
         tools=[...],
         system_prompt="You are a senior software engineer.",
         middleware=[rb.middleware()],
     )
     ```
 
-    ReasonBlocks hooks into two points in the agent loop:
+    The middleware hooks four points in the LangChain agent loop:
 
-    - **before_model** — scores the last step, updates FSM state, runs monitors, retrieves E-traces, and injects steering signals
-    - **wrap_model_call** — optionally overrides the model based on FSM state and tracks token usage
+    - **`before_agent`** — emits the `run_start` telemetry event.
+    - **`before_model`** — scores the last step, advances the FSM, evaluates monitors server-side, and queues E-trace injections.
+    - **`wrap_model_call`** — overrides the model if routing applies, renders queued injections into the system message, and records token usage.
+    - **`after_agent`** — emits the `run_finish` telemetry event.
   </Step>
 
   <Step title="Tag the run for the dashboard">
-    Call `rb.middleware()` with metadata parameters to label the run in the dashboard. All parameters are optional — omit any you don't need.
+    `rb.middleware()` accepts identifying metadata. All fields are optional.
 
     ```python
     agent = create_agent(
-        model="anthropic:claude-sonnet-4-20250514",
+        model="anthropic:claude-haiku-4-5-20251001",
         tools=[...],
         system_prompt="You are a senior software engineer.",
         middleware=[rb.middleware(
-            org_id="6d3f...",              # uuid; "default" if omitted
-            project_id="a91b...",          # uuid; "default" if omitted
-            run_id="my-run-1",             # auto-generated if omitted
-            agent_name="bugfixer",         # free-form filter key
+            run_id="my-run-1",                # auto-generated if omitted
+            agent_name="bugfixer",            # free-form filter key
             task="fix the TypeError",
-            model="claude-sonnet-4-20250514",
             framework="langchain",
+            model="claude-haiku-4-5-20251001",
             codebase_id="myrepo@sha:abc123",
+            org_id="default",                 # uuid; "default" if omitted
+            project_id="default",             # uuid; "default" if omitted
+            metadata={"experiment": "A"},     # free-form extra tags
         )],
     )
     ```
 
-    These values appear on the **Runs** table in the dashboard. Use `run_id` to correlate a dashboard row with a specific invocation in your logs.
+    These values land on the `monitor_runs` row in rb-api and surface in the dashboard's **Runs** table.
 
     <Note>
-      When your API key is a per-customer `rb_live_*` key bound to an org, the ReasonBlocks API automatically overrides `org_id` and `project_id` with the key's authoritative scope. Most users can leave those two fields at their defaults.
+      When your API key is a per-customer `rb_live_*` key bound to an org, rb-api overrides `org_id` and `project_id` with the key's authoritative scope. Most callers can leave them at `"default"`.
     </Note>
   </Step>
 
   <Step title="Run your agent">
-    Invoke your agent as you normally would. ReasonBlocks operates transparently — your agent code is unchanged, and steering happens inside the middleware layer.
+    Invoke the agent normally.
 
     ```python
     result = agent.invoke({
@@ -110,13 +105,13 @@ This guide walks you through adding ReasonBlocks to an existing LangChain agent.
     })
     ```
 
-    After the run completes, open the dashboard to see the scored steps, FSM state transitions, and any monitor signals that fired.
+    After the run completes, open the dashboard to see the scored steps, FSM transitions, and any monitor signals or E-trace injections that fired.
   </Step>
 </Steps>
 
 ## Complete example
 
-The following is a minimal but complete working example using a LangChain agent with mock tools:
+A minimal end-to-end script using a LangChain agent with mock tools:
 
 ```python
 import os
@@ -130,9 +125,9 @@ rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
 @tool
 def search_codebase(query: str) -> str:
     """Search the codebase for files matching a query."""
-    return f"No results for '{query}'"
+    return f"No results for {query!r}"
 
-model = ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=1024)
+model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)
 
 agent = create_agent(
     model=model,
@@ -149,19 +144,23 @@ result = agent.invoke({
 })
 ```
 
+<Warning>
+  The example scripts in `sdk/examples/` pass `trace_collection_enabled=True` to `ReasonBlocks(...)`. That keyword does not exist on the constructor — calling it that way raises `TypeError`. Drop it from any code copied out of the examples until those scripts are corrected.
+</Warning>
+
 ## Next steps
 
 <CardGroup cols={2}>
   <Card title="Installation options" icon="package" href="/installation">
-    Configure the base URL for self-hosted deployments and explore all init parameters
+    Constructor parameters and self-hosted base URLs.
   </Card>
   <Card title="How it works" icon="gear" href="/concepts/how-it-works">
-    Understand FSM states, E-traces, and the monitoring pipeline in depth
+    The middleware lifecycle in detail.
   </Card>
   <Card title="Model routing" icon="shuffle" href="/guides/model-routing">
-    Route to cheaper models on easy steps and more powerful models when the agent is stuck
+    Map FSM states to model identifiers.
   </Card>
-  <Card title="Full LangChain guide" icon="link" href="/guides/langchain">
-    In-depth guide covering LangGraph agents, async patterns, and configuration
+  <Card title="LangChain guide" icon="link" href="/guides/langchain">
+    Full integration walkthrough.
   </Card>
 </CardGroup>
