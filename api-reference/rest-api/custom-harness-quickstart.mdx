@@ -1,0 +1,299 @@
+---
+title: "Custom harness quickstart"
+description: "Wire ReasonBlocks into your own agent loop or evaluation runner with three HTTP calls — no SDK required. Works with any language."
+---
+
+This guide shows how to integrate ReasonBlocks from a custom harness — your own agent loop, an in-house evaluation runner, or any non-Python stack — using only HTTP calls.
+
+If you're on LangChain, LangGraph, the OpenAI Agents SDK, or the Claude Messages API, use the [Python SDK](/api-reference/reasonblocks) instead. This guide is for everyone else.
+
+## Prerequisites
+
+Before you start:
+
+1. An API key. See [REST API setup → get an API key](/api-reference/rest-api/setup#get-an-api-key).
+2. A base URL. Use `https://rb-api.reasonblocks.com` for the hosted service, or your own host for [self-hosted](/api-reference/rest-api/setup#self-hosting).
+
+Throughout this guide:
+
+- `$RB_API_KEY` — your bearer token.
+- `$RB_BASE_URL` — e.g. `https://rb-api.reasonblocks.com`.
+
+## The integration shape
+
+A run of your harness produces a sequence of agent steps. ReasonBlocks plugs in at three points around them:
+
+```
+                          ┌──────────────────────────────┐
+   (pre-task)             │ POST /v1/traces/retrieve     │  patterns to inject
+       │                  └──────────────────────────────┘  into the prompt
+       ▼
+   ┌──────────┐
+   │  step 1  │   per-step ─►  POST /v1/monitor/runs/{id}/steps   (telemetry +
+   ├──────────┤                                                   server-side
+   │  step 2  │                                                   scoring)
+   ├──────────┤
+   │  step N  │
+   └──────────┘
+       │
+       ▼
+   (post-task)            POST /v1/traces                          store full
+                          ─ or ─                                    trace for
+                          POST /v1/monitors/evaluate (mid-task)     distillation
+```
+
+You don't have to use all three. Start with retrieval; add telemetry when your loop is stable.
+
+## 1. Pre-task — retrieve patterns
+
+Call this once at the start of a task to get reasoning patterns to inject into your system prompt.
+
+```bash
+curl $RB_BASE_URL/v1/traces/retrieve \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "context": "refactor auth middleware to use JWT",
+    "tier": "e1",
+    "top_k": 3,
+    "model": "claude-opus-4-7"
+  }'
+```
+
+Request fields:
+
+<ParamField path="context" type="string" required>
+  One-sentence description of the task you're about to run. Used for similarity search.
+</ParamField>
+
+<ParamField path="tier" type="string">
+  `e1` (project-specific), `e2` (commons), or `e3` (universal). When omitted, the server picks.
+</ParamField>
+
+<ParamField path="top_k" type="integer" default="5">
+  1–50.
+</ParamField>
+
+<ParamField path="model" type="string">
+  Target model name. Lets retrieval prefer same-family lessons.
+</ParamField>
+
+<ParamField path="failure_type" type="string">
+  Narrow to one failure category, e.g. `infinite_loop`.
+</ParamField>
+
+Response:
+
+```json
+{
+  "traces": [
+    {
+      "tier": "e1",
+      "pattern_id": "p_abc123",
+      "similarity": 0.87,
+      "fields": { "situation": "...", "dead_ends": "...", "unlock": "..." }
+    }
+  ]
+}
+```
+
+`fields` is the source of truth — render it into your prompt however suits you. An empty `traces: []` is a normal response (no patterns matched, or you're over your monthly intervention cap).
+
+## 2. Per-step — log telemetry (optional)
+
+If you want server-side monitor scoring and dashboard visibility, log each step.
+
+Start the run once:
+
+```bash
+curl $RB_BASE_URL/v1/monitor/runs \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "run_id": "harness-run-2026-05-12-001",
+    "agent_name": "my-custom-harness",
+    "task": "refactor auth middleware to use JWT",
+    "model": "claude-opus-4-7",
+    "framework": "custom",
+    "task_profile": "coding"
+  }'
+```
+
+Then log each step as your agent runs:
+
+```bash
+curl $RB_BASE_URL/v1/monitor/runs/harness-run-2026-05-12-001/steps \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "step_index": 0,
+    "action": "read_file",
+    "action_input": "src/auth.py",
+    "thought": "Need to find the current session-token logic.",
+    "observation": "Found `verify_session()` at line 42.",
+    "is_error": false,
+    "tokens": 1834
+  }'
+```
+
+The response carries the server-computed score bundle for the step:
+
+```json
+{
+  "scores": { "verification_skip": 0.0, "claim_contradiction": 0.0 },
+  "total_score": 0.12,
+  "fired": []
+}
+```
+
+When `fired` is non-empty, the run has tripped a monitor. That's the signal to call `/v1/monitors/evaluate` (next section) for an intervention to inject on the next step.
+
+When the run finishes:
+
+```bash
+curl $RB_BASE_URL/v1/monitor/runs/harness-run-2026-05-12-001/finish \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"outcome": "success"}'
+```
+
+## 3. Post-task — submit the trace
+
+This is what trains the reasoning library on your runs. Submit the completed trace; the server distills it asynchronously and may generate new patterns for future retrieval.
+
+There are two body shapes. Most custom harnesses want the **legacy** shape:
+
+```bash
+curl $RB_BASE_URL/v1/traces \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "trace_id": "harness-run-2026-05-12-001",
+    "outcome": "success",
+    "steps": [
+      {"step_index": 0, "thought": "...", "action": "read_file",
+       "action_input": "src/auth.py", "observation": "...", "tokens_used": 1834}
+    ]
+  }'
+```
+
+Use the **v2** shape (`manifest` + `calls`) if you can capture full LLM call records — it preserves more context for the distiller. See the `TraceManifest` and `TraceCallRecord` schemas in the [live OpenAPI spec](https://rb-api.reasonblocks.com/openapi.json) for field details. v2 responses are `202 Accepted` (the distillation pipeline runs asynchronously).
+
+## Mid-task intervention (advanced)
+
+Instead of waiting for the trace to finish, ask the server to score the trajectory so far and, if a failure is forming, hand back a rendered intervention to inject as a system message:
+
+```bash
+curl $RB_BASE_URL/v1/monitors/evaluate \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-4-7",
+    "task_profile": "coding",
+    "steps": [
+      {"thought": "...", "action": "read_file", "action_input": "src/auth.py",
+       "observation": "..."}
+    ]
+  }'
+```
+
+Response:
+
+```json
+{
+  "inject": true,
+  "intervention_text": "You've read this file three times. Stop re-reading and ...",
+  "failure_type": "verification_skip",
+  "fired": ["verification_skip", "cyclic_compression"],
+  "scores": { "verification_skip": 0.71, "cyclic_compression": 0.62 },
+  "composite": 0.71
+}
+```
+
+When `inject` is `true`, prepend `intervention_text` as a system message on your next LLM call. When `false`, it's a no-op.
+
+## End-to-end — Python in ~50 lines
+
+```python
+import os, uuid, httpx
+
+BASE = os.environ["RB_BASE_URL"]   # https://rb-api.reasonblocks.com
+KEY  = os.environ["RB_API_KEY"]
+HEADERS = {"Authorization": f"Bearer {KEY}"}
+RUN_ID = f"harness-{uuid.uuid4()}"
+
+def run_task(task: str, model: str):
+    client = httpx.Client(base_url=BASE, headers=HEADERS, timeout=15.0)
+
+    # 1) Pre-task: pull patterns to seed the system prompt.
+    patterns = client.post("/v1/traces/retrieve", json={
+        "context": task, "tier": "e1", "top_k": 3, "model": model,
+    }).json()["traces"]
+    system_prompt = build_prompt(task, patterns)
+
+    # 2) Start the run for telemetry.
+    client.post("/v1/monitor/runs", json={
+        "run_id": RUN_ID, "agent_name": "my-harness", "task": task,
+        "model": model, "framework": "custom", "task_profile": "coding",
+    })
+
+    steps = []
+    for i in range(MAX_STEPS):
+        step = your_agent_step(system_prompt, history=steps)
+        steps.append(step)
+
+        score = client.post(f"/v1/monitor/runs/{RUN_ID}/steps", json={
+            "step_index": i,
+            "action": step.action, "action_input": step.action_input,
+            "thought": step.thought, "observation": step.observation,
+            "is_error": step.is_error, "tokens": step.tokens,
+        }).json()
+
+        if score["fired"]:
+            # Ask the server for an intervention to inject next turn.
+            intervention = client.post("/v1/monitors/evaluate", json={
+                "model": model, "task_profile": "coding",
+                "steps": [s.to_dict() for s in steps],
+            }).json()
+            if intervention["inject"]:
+                system_prompt += "\n\n" + intervention["intervention_text"]
+
+        if step.is_terminal:
+            break
+
+    # 3) Post-task: submit the trace for distillation.
+    client.post("/v1/traces", json={
+        "trace_id": RUN_ID,
+        "outcome": "success" if steps[-1].ok else "failure",
+        "steps": [s.to_dict() for s in steps],
+    })
+    client.post(f"/v1/monitor/runs/{RUN_ID}/finish", json={
+        "outcome": "success" if steps[-1].ok else "failure",
+    })
+```
+
+Adapt `your_agent_step` and `build_prompt` to your harness.
+
+## What you don't need to do
+
+- **You don't need to host anything.** All endpoints are server-side.
+- **You don't need to install the SDK.** Plain HTTP works.
+- **You don't need to log every step.** Retrieval (step 1) and trace submission (step 3) work standalone if you don't want telemetry.
+- **You don't need to compute monitor scores yourself.** The server scores each step you log and returns the bundle.
+
+## Going further
+
+<CardGroup cols={2}>
+  <Card title="Interactive OpenAPI" icon="bolt" href="https://rb-api.reasonblocks.com/docs">
+    Full schema for every endpoint. Try requests inline.
+  </Card>
+  <Card title="Codebase memory" icon="database" href="/guides/codebase-memory">
+    Store findings that survive across runs via `POST /v1/findings/{codebase_id}`.
+  </Card>
+  <Card title="Monitor profiles" icon="sliders" href="/configuration/monitor-profiles">
+    Define custom weighted scorer mixes; reference by `task_profile` in steps 2 and 3.
+  </Card>
+  <Card title="Versioning" icon="code-branch" href="/api-reference/rest-api/versioning">
+    What `/v1/` guarantees and how breaking changes ship.
+  </Card>
+</CardGroup>

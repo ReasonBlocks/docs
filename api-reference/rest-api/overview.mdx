@@ -1,0 +1,59 @@
+---
+title: "REST API overview"
+description: "Call ReasonBlocks directly over HTTP from a custom harness — no SDK required. Use this when your agent loop isn't on a supported framework, or when you want a thin language-agnostic integration."
+---
+
+The ReasonBlocks REST API is the same surface the Python SDK uses internally. Hit it directly when you're integrating from a custom harness, a non-Python stack, or any environment where pulling in the SDK isn't an option.
+
+## When to use the REST API
+
+Use the REST API directly when one of these is true:
+
+- Your agent loop runs in a language other than Python.
+- You've built your own evaluation harness or in-house agent framework that doesn't match the supported [framework integrations](/guides/langchain).
+- You want a minimal-dependency integration — three HTTP calls cover the full feature set.
+- You're embedding ReasonBlocks into a CI pipeline, batch job, or eval runner.
+
+If you're on LangChain, LangGraph, the OpenAI Agents SDK, or the Claude Messages API, use the [Python SDK](/api-reference/reasonblocks) instead — it wraps the same endpoints with framework-specific glue.
+
+## Where to start
+
+<CardGroup cols={2}>
+  <Card title="REST API setup" icon="key" href="/api-reference/rest-api/setup">
+    Base URL, authentication, environment variables for self-hosting, rate limits, and error codes.
+  </Card>
+  <Card title="Custom harness quickstart" icon="rocket" href="/api-reference/rest-api/custom-harness-quickstart">
+    End-to-end integration in three HTTP calls — pre-task pattern retrieval, per-step telemetry, post-task trace submission.
+  </Card>
+  <Card title="Versioning & back-compat" icon="code-branch" href="/api-reference/rest-api/versioning">
+    What `/v1/` guarantees, how breaking changes ship, and how legacy unversioned aliases work for already-deployed SDK clients.
+  </Card>
+  <Card title="Interactive OpenAPI" icon="bolt" href="https://rb-api.reasonblocks.com/docs">
+    Live Swagger UI for every endpoint. Try requests inline once you have an API key.
+  </Card>
+</CardGroup>
+
+## The three-call integration shape
+
+A run of your harness produces a sequence of agent steps. ReasonBlocks plugs in at three points:
+
+| Stage | Endpoint | Purpose |
+| --- | --- | --- |
+| Pre-task | `POST /v1/traces/retrieve` | Fetch reasoning patterns to inject into the system prompt. |
+| Per-step (optional) | `POST /v1/monitor/runs/{id}/steps` | Log telemetry; server returns the scored bundle. |
+| Post-task | `POST /v1/traces` | Submit the completed trace for distillation. |
+
+You can integrate one, two, or all three. Most custom harnesses start with pattern retrieval and add telemetry once they have a stable loop. See the [custom harness quickstart](/api-reference/rest-api/custom-harness-quickstart) for a working end-to-end example.
+
+## Auth at a glance
+
+Every request requires a bearer token:
+
+```bash
+curl https://rb-api.reasonblocks.com/v1/traces/retrieve \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"context":"...","tier":"e1","top_k":3}'
+```
+
+Issue keys from the dashboard (per-org scope) or set `REASONBLOCKS_KEYS` for static dev keys on a self-hosted deployment. See [REST API setup](/api-reference/rest-api/setup) for the full auth model.

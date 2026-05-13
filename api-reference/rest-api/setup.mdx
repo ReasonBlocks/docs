@@ -1,0 +1,145 @@
+---
+title: "REST API setup"
+description: "Base URL, authentication, environment variables for self-hosting, rate limits, CORS, and error codes for the ReasonBlocks REST API."
+---
+
+Everything you need to make your first authenticated request.
+
+## Base URL
+
+| Environment | Base URL |
+| --- | --- |
+| Production (hosted) | `https://rb-api.reasonblocks.com` |
+| Self-hosted | `http://<your-host>:8000` (see [self-hosting](#self-hosting)) |
+
+All public routes are versioned under `/v1/`. Example:
+
+```
+POST https://rb-api.reasonblocks.com/v1/traces/retrieve
+```
+
+<Note>
+Unversioned aliases like `POST /traces/retrieve` still work for SDK clients pinned to older paths, but are hidden from the public OpenAPI schema. Target `/v1/...` for new integrations. See [versioning](/api-reference/rest-api/versioning) for the back-compat policy.
+</Note>
+
+## Get an API key
+
+Three credential paths are accepted, in order of who should use each:
+
+<Steps>
+  <Step title="Per-customer API keys (external integrators)">
+    Issue these from the dashboard. Each key is scoped to an `org_id` and optionally a `project_id`. The server uses the key's scope as the authoritative tenant identity — body fields like `org_id` are ignored, so a customer can't write into another tenant by tampering with payload values.
+
+    Production keys start with `rb_live_`; test keys start with `rb_test_`.
+  </Step>
+  <Step title="Static keys (self-hosted, CI, dev)">
+    Set `REASONBLOCKS_KEYS=key1,key2` as a comma-separated env var on the server. Static keys have no org scope; routes that need a tenant accept `org_id` in the request body.
+  </Step>
+  <Step title="Supabase JWT (dashboard only)">
+    Used by the ReasonBlocks dashboard UI on behalf of a signed-in user. External integrators should not use this path.
+  </Step>
+</Steps>
+
+## Authenticate
+
+Every request must carry the bearer token:
+
+```bash
+curl https://rb-api.reasonblocks.com/v1/traces/retrieve \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"context":"refactor auth middleware","tier":"e1","top_k":3}'
+```
+
+A missing or invalid key returns `401`. A revoked key returns `401` within about 60 seconds (server-side auth cache TTL).
+
+## First request
+
+Sanity-check the service:
+
+```bash
+curl https://rb-api.reasonblocks.com/health
+# -> {"status":"ok","version":"0.1.0"}
+```
+
+Then try a real call:
+
+```bash
+curl https://rb-api.reasonblocks.com/v1/traces/retrieve \
+  -H "Authorization: Bearer $RB_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"context":"fix flaky test in payment service","tier":"e1","top_k":3}'
+```
+
+A successful response is `200` with `{"traces": [...]}`. An empty array is valid — it means no patterns matched, or you're over the monthly intervention cap.
+
+## Self-hosting
+
+The service runs as a single FastAPI process. Minimum environment variables:
+
+| Variable | Required for | Notes |
+| --- | --- | --- |
+| `REASONBLOCKS_KEYS` | Static key auth | Comma-separated. Empty disables static auth. |
+| `QDRANT_URL` | `/v1/traces/retrieve` returning real patterns | Otherwise retrieval returns `[]`. |
+| `QDRANT_API_KEY` | Same as above |  |
+| `OPENAI_API_KEY` | E1 / E2 similarity queries | E3 (scroll-all) works without it. |
+| `SUPABASE_URL` | Per-customer keys and JWT auth | Both auth paths read from Supabase. |
+| `SUPABASE_SERVICE_KEY` | Same as above |  |
+| `SUPABASE_JWT_SECRET` | Dashboard JWT auth |  |
+| `SUPABASE_DB_URL` | `/v1/monitor/stream` SSE live updates | Falls back to `503` when unset. |
+| `CORS_ALLOWED_ORIGINS` | Browser-side dashboards | Comma-separated origins. |
+
+Docker:
+
+```bash
+docker build -t rb-api .
+docker run -p 8000:8000 --env-file .env rb-api
+```
+
+The `Dockerfile` and `migrations/` directory live at the [`rb-api`](https://github.com/ReasonBlocks/rb-api) repo root.
+
+## Rate limits
+
+Per-principal sliding-window limiter (1-second token bucket). Each API key gets its own bucket.
+
+| Setting | Default | Environment variable |
+| --- | --- | --- |
+| Sustained rate per key | 200 / second | `RATE_LIMIT_PER_SEC` |
+| Burst | 400 | `RATE_LIMIT_BURST` |
+| Body size cap | 5 MB | `MAX_BODY_BYTES` |
+
+Exceeding the rate returns `429` with `Retry-After: 1`.
+
+<Tip>
+Per-key custom quotas (override the global default for specific customers) are tracked separately. Reach out if you need a different limit on your key.
+</Tip>
+
+## CORS
+
+The CORS allowlist is explicit — no wildcards combined with credentials. Set `CORS_ALLOWED_ORIGINS` to a comma-separated list of origins. Localhost dev origins are added only when `CORS_ALLOW_DEV_ORIGINS=true`.
+
+## Error codes
+
+Standard HTTP status codes. Bodies are JSON of shape `{"detail": "<reason>"}` on `4xx` and `5xx`.
+
+| Status | Meaning |
+| --- | --- |
+| 400 | Validation failure or malformed request |
+| 401 | Missing or invalid `Authorization` bearer |
+| 403 | Authenticated, but lacking access to the requested org or resource |
+| 404 | Resource not found — or a tenant mismatch hidden as 404 so resource IDs can't be enumerated |
+| 413 | Request body exceeded `MAX_BODY_BYTES` |
+| 422 | Pydantic schema violation (field-level) |
+| 429 | Rate limited |
+| 5xx | Server-side error; safe to retry with backoff |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Custom harness quickstart" icon="rocket" href="/api-reference/rest-api/custom-harness-quickstart">
+    Three HTTP calls to wire ReasonBlocks into your own agent loop.
+  </Card>
+  <Card title="Interactive OpenAPI" icon="bolt" href="https://rb-api.reasonblocks.com/docs">
+    Browse every endpoint and try requests inline.
+  </Card>
+</CardGroup>

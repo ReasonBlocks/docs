@@ -1,0 +1,46 @@
+---
+title: "Versioning & back-compat"
+description: "What the /v1/ contract guarantees, how breaking changes ship, and how legacy unversioned aliases work for already-deployed SDK clients."
+---
+
+The REST API follows a deliberate versioning policy so external integrators can pin against a stable surface.
+
+## The `/v1/` contract
+
+All public routes are mounted under `/v1/`. This is the surface external integrators should target. Anything under `/v1/` follows these rules:
+
+- Request schemas only grow in backwards-compatible ways — new optional fields are fine, new required fields are not.
+- Response schemas only grow additively. Removing or renaming a field is a breaking change.
+- HTTP status code semantics are stable per route.
+- Path parameter names are stable. Renaming a path parameter is a breaking change.
+
+When a breaking change is needed, the new contract will be mounted under `/v2/` alongside `/v1/`, with a deprecation window announced before sunset.
+
+## Unversioned legacy aliases
+
+For back-compat with already-deployed SDK clients that hardcode paths like `POST /traces/retrieve`, every public route is also mounted at its historical unprefixed location. These aliases:
+
+- **Are functionally identical** to the `/v1/` route — same handler.
+- **Are hidden from the OpenAPI schema.** [`/docs`](https://rb-api.reasonblocks.com/docs) only shows `/v1/`.
+- **May be removed** in a future release after a deprecation window. New integrations must not depend on them.
+
+<Note>
+If you're starting a fresh integration today, target `/v1/...`. Treat any unversioned response as legacy SDK back-compat, not a stable surface.
+</Note>
+
+## SDK pinning
+
+The Python SDK (`reasonblocks`) currently issues requests against the unversioned paths. When the SDK migrates to `/v1/`:
+
+1. The SDK minor version bumps.
+2. The internal HTTP clients prefix paths with `/v1`.
+3. `REASONBLOCKS_BASE_URL` semantics stay unchanged — the prefix is a client-side path concern, not a base URL one.
+
+Until that migration ships, the unversioned aliases are load-bearing and remain mounted.
+
+## OpenAPI and client code generation
+
+- Live spec: [`https://rb-api.reasonblocks.com/openapi.json`](https://rb-api.reasonblocks.com/openapi.json)
+- Interactive UI: [`https://rb-api.reasonblocks.com/docs`](https://rb-api.reasonblocks.com/docs)
+
+Both reflect only the `/v1/` surface. Code generation against this spec is safe — the unversioned aliases never appear there, so generated clients exclusively target `/v1/`.

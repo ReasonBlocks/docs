@@ -92,6 +92,15 @@
               "api-reference/types/step-record",
               "api-reference/types/e-trace"
             ]
+          },
+          {
+            "group": "REST API",
+            "pages": [
+              "api-reference/rest-api/overview",
+              "api-reference/rest-api/setup",
+              "api-reference/rest-api/custom-harness-quickstart",
+              "api-reference/rest-api/versioning"
+            ]
           }
         ]
       }
