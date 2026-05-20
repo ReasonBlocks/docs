@@ -1,0 +1,123 @@
+---
+title: "Prompt caching — the free 40–80%"
+description: "The highest-ROI single action for any RB customer. Verify cache_control markers fire, never compress before caching, watch the hit rate climb."
+---
+
+Prompt caching is the **single highest-ROI lever** in the agent token budget, and it costs nothing to enable. The cache-read tier on every major provider is heavily discounted vs fresh input:
+
+| provider | cache-read discount | minimum prefix | mechanism |
+|---|---|---|---|
+| **Anthropic Claude** | **−90%** ($0.30/M vs $3/M on Sonnet) | 1024 tokens (2048 on Haiku) | Explicit `cache_control` markers |
+| **OpenAI** | −50% | ≥1024 tokens | Automatic on stable prefixes |
+| **Google Gemini** | −75% on cached portion | varies | `context_caching` API |
+
+A production measurement from ProjectDiscovery (security agents on Anthropic) went from **59% → 70% cache savings** over 10 days just by tightening the wiring. Anthropic's own announcement: *"reducing costs by up to 90% and latency by up to 85% for long prompts."* On agentic workloads with 1M+ input tokens per problem, this is the difference between $3 and $0.50 per call.
+
+## The rule that matters
+
+<Warning>
+  **Cache *after* any string compression, never before.** Aggressive prompt compression that mutates the cached prefix invalidates the cache for every downstream call. ReasonBlocks's `TokenSavingMiddleware` is built so it only modifies *mutable* tool-output messages mid-history — the system prompt and tools (the cached prefix) are never touched. If you wire your own compressor before RB, make sure it preserves the cached prefix byte-for-byte.
+</Warning>
+
+## What RB does for you out of the box
+
+`ReasonBlocksMiddleware` and `TokenSavingMiddleware` are designed cache-safe:
+
+- The middleware never modifies the system prompt or tool definitions across turns. Those are the stable prefix Anthropic / OpenAI / Gemini caches against.
+- Tool-output compression replaces *same-id* `ToolMessage` instances (LangGraph's `add_messages` reducer treats same-id messages as in-place replacements). Cache invalidation only affects the modified message onward; earlier turns still hit the cache.
+- Injection text (monitor firings, early-exit nudges) lands as a new `HumanMessage` at the *tail* of the message list, not in the cached prefix.
+
+So if you mount RB with `enable_token_saving=True` (the default), you're already cache-safe. The work is downstream: verify the provider sees a stable prefix on every turn.
+
+## Verify cache hits in production
+
+Every Anthropic response includes `cache_read_input_tokens` and `cache_creation_input_tokens` in `usage`. A healthy long-running agent should show: first turn writes cache, every subsequent turn reads it.
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic()
+resp = client.messages.create(
+    model="claude-sonnet-4-6",
+    system=[{
+        "type": "text",
+        "text": LONG_SYSTEM_PROMPT,
+        "cache_control": {"type": "ephemeral"},   # the breakpoint
+    }],
+    tools=tools,
+    messages=messages,
+    max_tokens=2048,
+)
+
+print(f"input_fresh:  {resp.usage.input_tokens}")
+print(f"cache_read:   {resp.usage.cache_read_input_tokens}")     # should grow turn-over-turn
+print(f"cache_write:  {resp.usage.cache_creation_input_tokens}")  # should be ~zero after turn 1
+```
+
+If `cache_read_input_tokens` is zero on turn 2+, something upstream is mutating the prefix. Common culprits:
+
+1. **`cache_control` missing or mis-placed** — must be on the system block (or last tool, or message you want as the breakpoint). Anthropic supports up to 4 breakpoints.
+2. **System prompt being re-templated** — even a timestamp injected into the system text breaks the cache.
+3. **Tools list changing across calls** — a downstream wrapper sorting / re-ordering tools by hash.
+4. **Prefix below the minimum** — Anthropic's cache requires ≥1024 tokens on Sonnet/Opus, ≥2048 on Haiku. Tiny prompts can't be cached.
+
+## Combine with Anthropic native context editing
+
+Claude Sonnet 4.5+ ships a server-side **context-editing** feature behind a beta header. It clears stale `tool_use` rounds once the context grows past a threshold — Anthropic reports **84% token reduction on a 100-turn web search** with it enabled (vendor-reported; treat as upper bound).
+
+RB exposes this as a one-line passthrough:
+
+```python
+from anthropic import Anthropic
+from reasonblocks import context_editing_headers, CONTEXT_EDITING_TOOL
+
+client = Anthropic(default_headers=context_editing_headers())
+# pass CONTEXT_EDITING_TOOL in the request's context_management.edits list
+```
+
+The two features **stack**: Anthropic edits stale tool rounds server-side, then RB's TokenSavingMiddleware head+tail-truncates anything the customer still wants visible. The token-category footprints are disjoint, so the savings multiply.
+
+## Stack with Chain-of-Draft and code-review mode
+
+The full Tier-1 token-reduction stack for a code-review agent:
+
+```python
+from langchain_anthropic import ChatAnthropic
+from langchain.agents import create_agent
+from reasonblocks import (
+    for_code_review,
+    chain_of_draft_directive,
+    context_editing_headers,
+)
+
+agent = create_agent(
+    model=ChatAnthropic(
+        model="claude-sonnet-4-6",
+        default_headers=context_editing_headers(),   # Anthropic server-side eviction
+    ),
+    tools=[bash, ...],
+    system_prompt=task_prompt + chain_of_draft_directive(),  # CoD on output reasoning
+    middleware=for_code_review(                              # D-arm: monitor + tool truncation + early exit
+        fail_to_pass_tests=task.fail_to_pass,
+        max_tool_calls=50,
+    ),
+)
+```
+
+What each layer targets (mostly disjoint token pools, so the reductions multiply):
+
+| layer | targets | typical cut |
+|---|---|---|
+| Prompt caching (provider) | system prompt + tools (15–30% of input) | 90% of that pool |
+| Anthropic context editing | stale tool_use rounds (15–30% of input) | up to 84% of that pool |
+| RB tool-output compression | retained tool outputs (the 30–55% middle pool) | ~50% via head+tail |
+| RB code-review monitor | failed-task retries (avoidable cost) | +10.7pp acc at unchanged tok |
+| Chain-of-Draft | reasoning output text (5–25% of output) | up to 92% of that pool |
+
+The combined ceiling on a real 5+-step vertical agent: **50–80% cost cut at unchanged or better accuracy** — bounded by the orthogonality and your specific workload's token mix.
+
+## See also
+
+- [Code-review mode](/guides/code-review-mode) — the validated SWE-bench Pro D-arm stack
+- [Chain-of-Draft](/guides/chain-of-draft) — minimalist reasoning style
+- [Token saving](/guides/token-saving) — tool-output compression internals

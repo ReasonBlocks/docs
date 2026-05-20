@@ -57,6 +57,7 @@
               "guides/token-saving",
               "guides/code-review-mode",
               "guides/chain-of-draft",
+              "guides/prompt-caching",
               "configuration/reasonblocks-config",
               "configuration/monitor-profiles",
               "configuration/advanced",
