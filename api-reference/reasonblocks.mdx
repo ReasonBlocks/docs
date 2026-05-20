@@ -141,6 +141,48 @@ with rb.middleware(agent_name="summarizer", task="Summarize issue #7") as mw:
 
 ---
 
+## `ab_middleware()`
+
+Builds a run-scoped middleware for an A/B evaluation. Flips a deterministic coin (`assign_arm`) and returns either the full pipeline (`on`) or a vanilla passthrough control (`off`). Both arms force live telemetry on and stamp `experiment_id` / `arm` / `assignment_unit` / `rb_version` onto the run. See the [A/B evaluation guide](/guides/ab-testing) for the end-to-end flow and how to read the report.
+
+```python
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+mw = rb.ab_middleware(
+    experiment_id="cust-acme-q2",
+    unit_id="ticket-1843",      # stable -> retries stay in the same arm
+    on_fraction=0.5,
+    agent_name="reviewer",
+    task="Review PR #42",
+    org_id="acme",
+)
+# mw.arm is recorded on the run; use mw with create_agent(..., middleware=[mw])
+```
+
+<ParamField path="experiment_id" type="string" required>
+  Identifier shared by every run in the experiment. Stamped on the run and used as the report key (`GET /v1/monitor/experiments/{experiment_id}/report`). Immutable on the run once set.
+</ParamField>
+
+<ParamField path="unit_id" type="string">
+  Randomization unit. Hashed with `experiment_id` to pick the arm, so the same unit always lands in the same arm. Pass a **stable** task/ticket id if you want retries to stay in their arm; defaults to the run id (each attempt drawn independently).
+</ParamField>
+
+<ParamField path="on_fraction" type="float" default="0.5">
+  Probability of the `on` arm, in `[0, 1]`. Also passed to the report's SRM check as the expected split.
+</ParamField>
+
+The remaining keyword arguments mirror [`middleware()`](#middleware) (`run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `metadata`). Experiment tags are stamped last, so a caller's `metadata` cannot override the arm.
+
+### Returns
+
+<ResponseField name="ReasonBlocksMiddleware" type="middleware">
+  A run-scoped middleware, same type and lifecycle as [`middleware()`](#middleware). For the `off` arm it runs in passthrough mode — scoring and telemetry only, with the model request left untouched. The chosen arm is on `mw._run_metadata["arm"]`.
+</ResponseField>
+
+---
+
 ## `claude_messages_session()`
 
 Builds a [`SteeringSession`](/api-reference/steering-session) wired for the Anthropic Messages API loop. Pair with [`run_messages_agent_loop(..., session=session)`](/api-reference/integrations/claude-tools#run_messages_agent_loop) to run the full pipeline at every turn.

@@ -1,0 +1,102 @@
+---
+title: "Run an A/B evaluation"
+description: "Randomly route each agent run to ReasonBlocks ON (full pipeline) or OFF (vanilla), then pull a per-arm report comparing cost, token usage, and task accuracy. Built for proving value during an evaluation."
+---
+
+`ab_middleware()` flips a deterministic coin per run and returns either the **full ReasonBlocks pipeline** (the "on" arm) or a **vanilla agent** (the "off" arm). Both arms stream telemetry to rb-api, so you can pull a single report that compares them side by side — token/cost deltas, task-accuracy non-inferiority, and a per-day learning curve.
+
+<Note>
+  Use this for a head-to-head evaluation ("does ReasonBlocks help, and by how much?"). For normal production use, reach for [`middleware()`](/api-reference/reasonblocks#middleware) directly.
+</Note>
+
+## What each arm does
+
+| | `on` (full ReasonBlocks) | `off` (vanilla control) |
+|---|---|---|
+| E1/E2/E3 retrieval | ✅ | — |
+| Monitor steering | ✅ | — |
+| Model routing | ✅ (if configured) | — |
+| System-prompt rewrite | ✅ | — (true passthrough) |
+| Live telemetry | ✅ | ✅ |
+| Run scored server-side | ✅ | ✅ |
+
+The `off` arm is a true passthrough — the model request is left untouched, so the control isn't quietly getting ReasonBlocks' prompt-cache optimization. It still streams telemetry, so every control run is scored and recorded just like the treatment arm.
+
+## Wire it up
+
+Call `ab_middleware()` once per run with a stable `experiment_id` and a per-unit `unit_id`. Everything else mirrors [`middleware()`](/api-reference/reasonblocks#middleware).
+
+```python
+from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
+from reasonblocks import ReasonBlocks
+
+rb = ReasonBlocks(api_key="rb_live_...")
+model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)
+
+for task in tasks:
+    mw = rb.ab_middleware(
+        experiment_id="cust-acme-q2",
+        unit_id=task.id,            # stable id -> retries stay in the same arm
+        on_fraction=0.5,            # 50/50 split
+        agent_name="reviewer",
+        task=task.prompt,
+        model="claude-haiku-4-5-20251001",
+        org_id="acme",
+    )
+    agent = create_agent(model=model, tools=[...], system_prompt="...", middleware=[mw])
+    outcome = "failure"
+    try:
+        result = agent.invoke({"messages": [("user", task.prompt)]})
+        outcome = "success" if task.check(result) else "failure"
+    finally:
+        mw.flush_session(outcome_status=outcome)   # records the run's outcome
+        mw.close(timeout=10)
+```
+
+<Tip>
+  Pass a **stable** `unit_id` (a task/ticket id, not a fresh per-attempt run id). Assignment is a hash of `(experiment_id, unit_id)`, so a retried task lands in the same arm and can't contaminate the comparison. Uniform hashing also keeps any sub-population — one repo, one task type — split at ~`on_fraction` for free.
+</Tip>
+
+The middleware stamps `experiment_id`, `arm`, `assignment_unit`, and `rb_version` onto the run row. rb-api treats `experiment_id` + `arm` as **immutable once set**, so a resume or retry can't relabel a run.
+
+If you just need the arm decision without a middleware (e.g. to route at a different layer), call the assignment function directly:
+
+```python
+from reasonblocks import assign_arm
+
+arm = assign_arm("cust-acme-q2", task.id, on_fraction=0.5)  # -> "on" | "off"
+```
+
+## Disable the intervention cap for the eval
+
+Set `INTERVENTION_CAP_ENABLED=false` on rb-api for the duration of the evaluation. Otherwise a free-tier org that crosses the monthly cap mid-experiment would have its `on` arm silently downgraded to vanilla — corrupting the comparison without any error.
+
+<Warning>
+  Experiment-tagged runs are excluded from the billing meter regardless of this flag, but the cap *gate* (which zeroes retrieval when an org is over quota) only lifts when `INTERVENTION_CAP_ENABLED=false`. Set it for the eval window.
+</Warning>
+
+## Pull the report
+
+```bash
+curl -sS \
+  "https://rb-api.reasonblocks.com/v1/monitor/experiments/cust-acme-q2/report?org_id=acme&on_fraction=0.5" \
+  -H "Authorization: Bearer $RB_API_KEY"
+```
+
+`on_fraction` is your configured ON probability — used only for the sample-ratio-mismatch (SRM) check. The response is computed live from telemetry on every call; nothing is cached.
+
+### Reading the report
+
+- **`comparison.cost_per_run_usd` / `tokens_per_run_median`** — the primary result. Cost is priced from the per-step input / output / cache-read split, per the model actually used, so model routing is credited. Tokens are the most defensible headline because they're objective.
+- **`comparison.success_rate`** — the accuracy *guardrail*. Reported as a difference with a Newcombe confidence interval, plus a task-profile-stratified interval. Frame it as non-inferiority ("accuracy didn't regress"), not just "no significant difference" — and watch the CI width at small N.
+- **`srm`** — flags if the on/off split drifted from `on_fraction`. A flag often means a bug (the `on` path is dropping runs before they're tagged), not bad luck.
+- **`timeseries`** — per-day, per-arm cost and accuracy. Because distillation runs on **both** arms, the `on` library grows during the window — read this as a learning curve, and treat the earliest (cold-library) buckets as the stationary baseline.
+- **`caveats`** — auto-generated warnings (wide CI, low token-split coverage, degenerate strata, non-stationarity).
+
+<Warning>
+  Two honest limitations to keep in mind:
+
+  - The accuracy label is the **self-reported** run `outcome`. For a defensible non-inferiority claim, validate a blind sample of labels, and make `outcome` a mechanical function of run artifacts (tests passed, exit code) rather than a judgment that sees the arm.
+  - Token-saving compression lives on the separate [`build_middleware`](/configuration/reasonblocks-config) config path, **not** in `ab_middleware`. On short, clean tasks the `on` arm adds retrieval/steering text without a compression payoff and can cost *more*. The token win shows on long, messy trajectories — evaluate on realistic work.
+</Warning>

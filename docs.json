@@ -58,6 +58,7 @@
               "guides/code-review-mode",
               "guides/chain-of-draft",
               "guides/prompt-caching",
+              "guides/ab-testing",
               "configuration/reasonblocks-config",
               "configuration/monitor-profiles",
               "configuration/advanced",
