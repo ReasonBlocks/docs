@@ -1,0 +1,74 @@
+---
+title: "Chain-of-Draft reasoning style"
+description: "Replace verbose Chain-of-Thought with minimalist ≤5-word drafts. Prompt-only, zero infra, composes with any mode."
+---
+
+`chain_of_draft_directive()` returns a one-paragraph system-prompt addendum that tells the model to do its *thinking* in ≤5-word drafts instead of full prose sentences. Zero infrastructure cost — it's text the model sees once per call.
+
+It composes with any of the [validated modes](/guides/code-review-mode) — modes are middleware, this is system-prompt content. Use both for the stacked savings.
+
+## When to use it
+
+Use Chain-of-Draft when **reasoning text** is a non-trivial share of your agent's output. Math-heavy or multi-hop reasoning workloads gain the most; pure tool-call agents see smaller wins because the tool-call payload dominates the output.
+
+<Note>
+  The original paper (Xu et al., Zoom, Feb 2025, [arXiv 2502.18600](https://arxiv.org/abs/2502.18600)) reports CoD using **~7.6% of CoT tokens** at parity accuracy on GSM8K math (≈40 tokens vs ≈200 per response on GPT-4o / Claude 3.5 Sonnet). That headline number is *math-specific*. On tool-calling code agents we measure single-digit-to-mid-teens cost reduction in our paired runs — measure on your workload before quoting a savings number.
+</Note>
+
+## One-line install
+
+```python
+from reasonblocks import chain_of_draft_directive
+
+agent = create_agent(
+    model="claude-sonnet-4-6",
+    tools=[...],
+    system_prompt=my_base_prompt + chain_of_draft_directive(),
+)
+```
+
+## Compose with `mode="code_review"`
+
+The two work together cleanly — CoD shapes the output tokens, the code-review monitor + tool-output compression handle the input side.
+
+```python
+from reasonblocks import for_code_review, chain_of_draft_directive
+
+agent = create_agent(
+    model="claude-sonnet-4-6",
+    tools=[bash, ...],
+    system_prompt=task_prompt + chain_of_draft_directive(),
+    middleware=for_code_review(
+        fail_to_pass_tests=task.fail_to_pass,
+        max_tool_calls=50,
+    ),
+)
+```
+
+Result on a typical code-fix agent: the code-review preset cuts input tokens (head+tail tool-output truncation, monitor injections), and CoD cuts output tokens (reasoning text in 5-word drafts).
+
+## What the directive looks like
+
+```text
+# Reasoning style — Chain of Draft
+Keep each reasoning step to ≤5 words. Drop articles, hedges, and restatements.
+The final answer or tool call goes in full prose — the *thinking* is in 5-word
+fragments.
+
+Example:
+  Not: "I should look up the user by id, then check their account status."
+  Yes: "Need user. Look up id. Then check status."
+```
+
+**~84 tokens of overhead**, sent once per call. Save the constant on import and concatenate to whatever system prompt you already have.
+
+## What CoD does *not* do
+
+- It does **not** speed up inference — the model still processes the same input. The saving is on the model's *output* (= billed at the higher output-token rate).
+- It does **not** change accuracy on its own — the paper's headline is *parity* accuracy. We've measured no degradation on bug-fix tasks; harder symbolic reasoning may see different deltas.
+- It is **not** a substitute for tool-output compression — those are two different categories of tokens. Stack both.
+
+## See also
+
+- [Code-review mode](/guides/code-review-mode) — the validated D-arm middleware stack
+- [TokenSavingMiddleware](/guides/token-saving) — tool-output compression and early-exit
