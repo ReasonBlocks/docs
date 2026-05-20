@@ -41,8 +41,8 @@ rb = ReasonBlocks(
   Whether to retrieve and inject E-trace patterns from the server. Set to `False` to skip the retrieval round-trip — useful in local development or CI environments without rb-api access.
 </ParamField>
 
-<ParamField path="customer_id" type="string">
-  Per-customer identifier sent with E1 (instance-level) retrieval queries. The server scopes the Qdrant lookup to traces tagged with this `customer_id`, so prior runs within the same customer can be matched while runs from other customers stay isolated.
+<ParamField path="monitor_names" type="list[str] | None" default="None">
+  Accepted for backward compatibility but currently a no-op on the middleware path — the monitor suite runs server-side. Custom local monitors require a custom injection.
 </ParamField>
 
 <ParamField path="live_streaming_enabled" type="boolean" default="True">
@@ -50,7 +50,7 @@ rb = ReasonBlocks(
 </ParamField>
 
 <ParamField path="task_profile" type="string" default='"coding"'>
-  Selects the monitor weight vector on the server. Built-in profiles are `"coding"` (the default), `"pr_review"` (drops `edit_revert` and `test_repeat` to 0 and redistributes onto `streak`, `diversity`, `hedge`), and `"qa"` (boosts `hedge` to dominate; drops `call_count` and `edit_revert`). See [Monitor weights and profiles](/configuration/monitor-profiles) for the per-profile weight tables. The profile is stamped on every `run_start` event and persisted on the run row.
+  Selects the monitor weight vector on the server. Built-in profiles are `"coding"` (the default), `"pr_review"` (weights `semantic_loop` highest for read-only review agents), and `"qa"` (weights `claim_contradiction` and `silent_topic_drift` highest for question-answering agents). See [Monitor profiles](/configuration/monitor-profiles) for the per-profile weight tables. The profile is stamped on every `run_start` event and persisted on the run row.
 </ParamField>
 
 ---

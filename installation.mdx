@@ -79,7 +79,6 @@ rb = ReasonBlocks(
         "SKIP":   "anthropic:claude-sonnet-4-20250514",
     },
     e_traces_enabled=True,
-    customer_id="acme-prod",
     live_streaming_enabled=True,
     task_profile="coding",
 )
@@ -109,16 +108,12 @@ rb = ReasonBlocks(
   When `False`, E1/E2/E3 injections are not registered, so retrieval calls to rb-api never fire. The monitor steering injection still runs.
 </ParamField>
 
-<ParamField path="customer_id" type="str | None" default="None">
-  Forwarded to `E1Injection` so instance-level patterns retrieved from rb-api are scoped to a specific customer.
-</ParamField>
-
 <ParamField path="live_streaming_enabled" type="bool" default="True">
   Stream `run_start` / `step` / `run_finish` events to rb-api as the run unfolds. Set to `False` for offline mode — the local `step_log` still populates.
 </ParamField>
 
 <ParamField path="task_profile" type="str" default='"coding"'>
-  Server-side monitor weight preset. Built-in profiles: `coding` (default), `pr_review` (review agents — drops `edit_revert` and `test_repeat` to 0), `qa` (over-qualifying answers — `hedge` dominates). The value is forwarded to `/monitors/evaluate` and to `MonitorSteeringInjection`.
+  Server-side monitor weight preset. Built-in profiles: `coding` (default), `pr_review` (tuned for read-only review agents), and `qa` (tuned for question-answering agents). The value is forwarded to `/monitors/evaluate` and to `MonitorSteeringInjection`. See [Monitor profiles](/configuration/monitor-profiles) for the per-profile weight tables.
 </ParamField>
 
 <ParamField path="monitor_names" type="list[str] | None" default="None">

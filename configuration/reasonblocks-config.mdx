@@ -49,7 +49,6 @@ config = ReasonBlocksConfig(
     ts_enable_early_exit=True,
 
     # Routing / scoping
-    customer_id="acme",
     monitor_task_profile="coding",
 )
 
@@ -147,7 +146,7 @@ agent = create_agent(model=..., tools=..., middleware=middleware)
 </ParamField>
 
 <ParamField path="ts_enable_early_exit" type="bool" default="True">
-  Enable the early-exit nudge. When enabled, `build_middleware` automatically wires `default_suite_signals` as the `signals_fn`.
+  Enable the early-exit nudge that suggests wrapping up once the trajectory looks finished. Supply a custom trajectory scorer via `ts_signals_fn` to drive it; when omitted it uses the middleware's built-in heuristics.
 </ParamField>
 
 <ParamField path="ts_early_exit_min_call_index" type="int" default="40">
@@ -206,9 +205,9 @@ Apply only when `enable_general_monitor=True`.
 
 ## Routing and scoping
 
-<ParamField path="customer_id" type="str | None" default="None">
-  Used by E1 retrieval to narrow patterns to the customer's scope. When `None`, E1 retrieves from the global pattern store.
-</ParamField>
+<Note>
+  E1 retrieval is scoped to your organization automatically — rb-api derives the scope from the API key's principal. There is no `customer_id` field on `ReasonBlocksConfig` or the `ReasonBlocks` constructor.
+</Note>
 
 <ParamField path="monitor_task_profile" type="str" default="&quot;coding&quot;">
   Server-side monitor weight profile. Real values referenced in the SDK: `"coding"` (default), `"pr_review"`. See [Monitor profiles](/configuration/monitor-profiles) for the per-profile weight tables (which live in rb-api, not the SDK).
@@ -220,7 +219,7 @@ Apply only when `enable_general_monitor=True`.
   ```python
   config = ReasonBlocksConfig(
       monitor_task_profile="coding",
-      monitor_weights={"streak": 0.5, "hedge": 0.05},
+      monitor_weights={"semantic_loop": 0.5, "verification_skip": 0.05},
   )
   ```
 </ParamField>

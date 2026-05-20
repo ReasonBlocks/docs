@@ -1,126 +1,110 @@
 ---
-title: "Code-review mode — the validated SWE-bench Pro stack"
-description: "One-line install for the middleware configuration measured at -51.8% input tokens at unchanged pass rate on n=75 SWE-bench Pro paired runs."
+title: "Token reduction for coding agents"
+description: "The middleware stack measured at -51.8% input tokens at unchanged pass rate on n=75 paired SWE-bench Pro runs, assembled from TokenSavingMiddleware and the general monitor."
 ---
 
-`mode="code_review"` mounts the exact middleware stack ReasonBlocks shipped to the public **SWE-bench Pro D-arm** benchmark — the only configuration in our results table that delivers a >50% input-token cut at unchanged accuracy on a real, paired, n=75 run.
-
-If you ship a code-fixing / SWE-style / coding agent and want token reduction without losing pass rate, this is the preset to use.
-
-## What it does
-
-Three composed middleware, in the order that's measured to work:
-
-1. **Code-review reactive monitor (7 strict_v1 rules)** — detects semantic loop, repeated error, edits without test, edits inside `site-packages`, missed FAIL_TO_PASS tests, half-budget no-edits, and final-10% over-editing. Injects a short corrective hint when one fires.
-2. **Tool-output compression** — head+tail truncates any `ToolMessage` whose content exceeds `1800` characters, leaving the most-recent `2` tool messages untouched so the agent keeps full visibility into the step it's actively reasoning about.
-3. **Early-exit nudge** — once the agent has spent at least 40 model calls, if the monitor signals overthinking (rules 1/3/4), prepends a "stop investigating, submit your best answer" message.
+For SWE-style code-fixing agents, two real middleware components reproduce the configurations from our paired SWE-bench Pro benchmark: `TokenSavingMiddleware` (compression + early-exit) for maximum cost cut at unchanged accuracy, and the general monitor (`enable_general_monitor`) for an accuracy lift. This page shows how to assemble each.
 
 ## Validated headline
 
-Paired n=75 runs on **ScaleAI/SWE-bench_Pro**, `claude-sonnet-4-6`, real Docker grading, same task ids across arms (full table: `swebench-pro-bench/results/compare_a_cv1_d.json`).
+Paired n=75 runs on **ScaleAI/SWE-bench_Pro**, `claude-sonnet-4-6`, real Docker grading, same task ids across arms.
 
-| arm | pass rate | mean input tokens | delta |
-|---|---|---|---|
-| baseline | 25.3% | 1,257,316 | — |
-| **`mode="code_review"`** (D arm) | **25.4%** | **606,212** | **−51.8% tokens, flat accuracy** |
-| `enable_general_monitor=True` (C_v1) | **36.0%** | 1,136,946 | +10.7pp accuracy, −9.6% tokens |
+| Arm | Configuration | Pass rate | Mean input tokens | Delta |
+|---|---|---|---|---|
+| baseline | no middleware | 25.3% | 1,257,316 | — |
+| **token-saving** | `TokenSavingMiddleware` | **25.4%** | **606,212** | **−51.8% tokens, flat accuracy** |
+| **+ general monitor** | `enable_general_monitor=True` | **36.0%** | 1,136,946 | +10.7pp accuracy, −9.6% tokens |
 
-Use `mode="code_review"` when the goal is maximum cost cut at unchanged success; use the C_v1 monitor when the goal is the accuracy lift.
+Use the token-saving stack when the goal is maximum cost cut at unchanged success; add the general monitor when the goal is the accuracy lift.
 
-## One-line install
+## Token-saving stack (the −51.8% arm)
+
+Head+tail tool-output compression plus an early-exit nudge. Compression works on its own; the early-exit nudge requires a `signals_fn` you supply (there is no built-in — see [token saving](/guides/token-saving)).
 
 ```python
 from langchain.agents import create_agent
-from reasonblocks import for_code_review
+from reasonblocks import ReasonBlocks, TokenSavingMiddleware
+
+rb = ReasonBlocks(api_key="rb_live_...")
 
 agent = create_agent(
     model="claude-sonnet-4-6",
     tools=[bash_tool, ...],
     system_prompt="...",
-    middleware=for_code_review(
-        fail_to_pass_tests=task.fail_to_pass,   # SWE-bench Pro metadata
-        max_tool_calls=50,                      # budget the monitor reasons about
-    ),
+    middleware=[
+        rb.middleware(agent_name="swe-agent"),
+        TokenSavingMiddleware(
+            compress_threshold_chars=1800,    # validated threshold
+            keep_recent_tool_messages=2,      # keep the active step fully visible
+            early_exit_min_call_index=40,
+            # signals_fn=my_signals,          # supply to enable the early-exit nudge
+        ),
+    ],
 )
 ```
 
-`for_code_review(...)` returns a ready-to-mount middleware list — the code-review monitor and `TokenSavingMiddleware` pre-configured with the validated D-arm thresholds. Drop it straight into `create_agent(middleware=...)`.
+## Add the general monitor (the accuracy-lift arm)
 
-## Or via the unified config
-
-If you're already assembling the SDK stack through `ReasonBlocksConfig` / `build_middleware`, use `from_mode` so the preset composes cleanly with E-traces, model routing, and the rest.
+`GeneralMonitorMiddleware` runs the v1 rule-firing detector pack (semantic loop, verification skip, and the rest — see [Monitors](/concepts/monitors)) and injects a short corrective hint when a rule fires. Place it before `TokenSavingMiddleware` so injected hints go out compressed.
 
 ```python
-from reasonblocks import ReasonBlocksConfig, build_middleware
+from langchain.agents import create_agent
+from reasonblocks import ReasonBlocks, GeneralMonitorMiddleware, TokenSavingMiddleware
 
-cfg = ReasonBlocksConfig.from_mode(
-    "code_review",
-    cr_fail_to_pass_tests=task.fail_to_pass,
-    cr_max_tool_calls=50,
+rb = ReasonBlocks(api_key="rb_live_...")
+
+agent = create_agent(
+    model="claude-sonnet-4-6",
+    tools=[bash_tool, ...],
+    system_prompt="...",
+    middleware=[
+        rb.middleware(agent_name="swe-agent"),
+        GeneralMonitorMiddleware(
+            max_tool_calls=50,                # match your agent loop's budget
+            pack="v1",
+            verify_tools=frozenset({"run_tests", "pytest"}),  # your verify tools
+            submit_tools=frozenset({"submit"}),               # your submit tools
+        ),
+        TokenSavingMiddleware(compress_threshold_chars=1800, keep_recent_tool_messages=2),
+    ],
 )
-middleware = build_middleware(cfg, api, score_fn=..., fsm=..., state_manager=...)
 ```
 
-`from_mode("code_review")` pins these knobs to the D-arm values:
+## Assemble via the unified config
 
-| knob | value |
-|---|---|
-| `enable_token_saving` | `True` |
-| `ts_compress_threshold_chars` | `1800` |
-| `ts_keep_recent_tool_messages` | `2` |
-| `ts_enable_early_exit` | `True` |
-| `cr_fail_to_pass_tests` | (caller-supplied) |
-| `cr_max_tool_calls` | `50` (override per task) |
+If you compose the stack through `ReasonBlocksConfig` / `build_middleware`, the ordering (general monitor before token-saving) is handled for you:
 
-Any other field on `ReasonBlocksConfig` you pass as a keyword argument to `from_mode` overrides the preset for that one field.
+```python
+from reasonblocks import ReasonBlocksAPI, ReasonBlocksConfig, build_middleware
+from reasonblocks.fsm import DifficultyFSM
+from reasonblocks.state import TraceStateManager
+from reasonblocks.client import ReasonBlocks
 
-## What it expects from your agent
+api = ReasonBlocksAPI(api_key="rb_live_...")
 
-<AccordionGroup>
-  <Accordion title="A bash-like tool (any name)">
-    Several rules parse the commands the agent executes (e.g. did it run `pytest -xvs <FAIL_TO_PASS_NAME>`? did it `sed -i` inside `site-packages`?). The monitor auto-detects tool names `bash`, `shell`, `run_command`, `execute`, `run_bash`. Pass `bash_tool_names=("your_tool",)` to override:
+cfg = ReasonBlocksConfig(
+    enable_token_saving=True,
+    ts_compress_threshold_chars=1800,
+    ts_keep_recent_tool_messages=2,
+    ts_enable_early_exit=True,
+    enable_general_monitor=True,   # the accuracy-lift arm; drop for token-saving only
+    gm_max_tool_calls=50,
+)
 
-    ```python
-    from reasonblocks import CodeReviewMonitorMiddleware
-
-    middleware = [
-        CodeReviewMonitorMiddleware(
-            fail_to_pass_tests=task.fail_to_pass,
-            max_tool_calls=50,
-            bash_tool_names=("execute_command",),
-        ),
-        TokenSavingMiddleware(),
-    ]
-    ```
-  </Accordion>
-  <Accordion title="FAIL_TO_PASS test names (optional)">
-    Rule 5 (`missed_fail_to_pass`) fires when the agent ran pytest but not against the failing tests by name. Pass the test ids from your task metadata if you have them; the rule simply won't fire if you don't.
-  </Accordion>
-  <Accordion title="A reasonable max tool-call budget">
-    Rules 3 (`budget_50_no_edits`) and 4 (`budget_90`) fire based on `max_tool_calls`. Pass the same budget you use in your agent loop so the monitor's thresholds line up with reality.
-  </Accordion>
-</AccordionGroup>
-
-## The 7 rules
-
-In priority order — first match wins, then a per-rule cooldown (default 8 calls) prevents the same rule firing twice in quick succession.
-
-| # | rule | fires when… |
-|---|---|---|
-| 2 | `repeated_error` | the last two tool results contain `error`/`exception`/`traceback`/`failed` |
-| 1 | `loop` | the last 3 bash commands have identical signatures and none was a source edit |
-| 4 | `budget_90` | the agent has used ≥90% of `max_tool_calls` |
-| 6 | `edited_site_packages` | a recent edit command targets a path containing `site-packages` |
-| 7 | `edit_without_test` | the most recent source edit was not followed by a pytest run |
-| 3 | `budget_50_no_edits` | half the budget has elapsed and no source edit has happened yet |
-| 5 | `missed_fail_to_pass` | the agent ran pytest but did not name any of the FAIL_TO_PASS tests |
-
-Each rule injects a short corrective hint (≤5x shorter than the full rule text, to keep the firing cost low). Full text in [`sdk/reasonblocks/modes/code_review.py`](https://github.com/ReasonBlocks/reasonblocks/blob/main/sdk/reasonblocks/modes/code_review.py).
-
-## Where it composes with other middleware
+middleware = build_middleware(
+    cfg, api,
+    score_fn=ReasonBlocks.score_step,
+    fsm=DifficultyFSM(),
+    state_manager=TraceStateManager(),
+)
+```
 
 <Note>
-  `for_code_review()` returns just the two middleware needed for the D-arm stack. To stack it with `ReasonBlocksMiddleware` (E-traces, model routing, FSM steering), use the unified `build_middleware(ReasonBlocksConfig.from_mode("code_review", ...))` path — it places the code-review monitor before token-saving so injected hints go out compressed.
+  The early-exit nudge fires only when you pass a `signals_fn` (config field `ts_signals_fn`). Without one, the token-saving stack still delivers the bulk of the savings through tool-output compression.
 </Note>
 
-See also: [TokenSavingMiddleware](/guides/token-saving) for the compression layer used here in standalone form, and [ReasonBlocksConfig](/configuration/reasonblocks-config) for the full set of knobs.
+## See also
+
+- [Reduce token usage](/guides/token-saving) — `TokenSavingMiddleware` compression, early-exit, and the `signals_fn` contract
+- [Monitors](/concepts/monitors) — the v1 detector pack the general monitor runs
+- [ReasonBlocksConfig](/configuration/reasonblocks-config) — every `ts_*` / `gm_*` knob

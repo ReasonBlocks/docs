@@ -14,7 +14,7 @@ description: "Diagnose and fix the issues users hit most: import errors, missing
 
     **What this means**
 
-    `reasonblocks/__init__.py` resolves public names lazily through a PEP 562 `__getattr__`. The `_LAZY` mapping in `__init__.py` covers every documented name, including `TokenSavingMiddleware`, `GeneralMonitorMiddleware`, `ReasonBlocks`, `ReasonBlocksAPI`, `MonitorClient`, `compress_tool_output`, and `default_suite_signals`. Accessing any of them on the module object should succeed.
+    `reasonblocks/__init__.py` resolves public names lazily through a PEP 562 `__getattr__`. The `_LAZY` mapping in `__init__.py` covers every documented name, including `TokenSavingMiddleware`, `GeneralMonitorMiddleware`, `ReasonBlocks`, `ReasonBlocksAPI`, `MonitorClient`, `compress_tool_output`, and `assign_arm`. Accessing any of them on the module object should succeed.
 
     If you hit this error for a **documented** name, that's a bug in the lazy mapping (the name is in the docs but missing from `_LAZY`). File an issue with the exact name you tried to access and the SDK version.
 

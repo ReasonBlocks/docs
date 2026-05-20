@@ -11,7 +11,7 @@ E-traces are the patterns ReasonBlocks pulls from the rb-api pattern store and a
   <Tab title="E1 — Instance-level">
     **Customer-scoped patterns retrieved by semantic similarity, gated by monitor signal, capped at one firing per run.**
 
-    `E1Injection` builds its query from the last **3** thoughts in the trace and asks rb-api for `level="e1"`, `top_k=1`, scoped to `customer_id` if one was passed to the `ReasonBlocks` constructor. Server-side, rb-api enforces the E1 similarity threshold (0.8) plus any per-pattern `gate_threshold`; these gates are not client-tunable.
+    `E1Injection` builds its query from the last **3** thoughts in the trace and asks rb-api for `level="e1"`, `top_k=1`. Retrieval is scoped to your organization automatically — rb-api derives the scope from the API key's principal, so there is no client-side `customer_id` parameter. Server-side, rb-api enforces the E1 similarity threshold (0.8) plus any per-pattern `gate_threshold`; these gates are not client-tunable.
 
     Client-side, E1 retrieval is gated by recent monitor history. The query is **only** issued when:
 
@@ -94,7 +94,7 @@ allow E1 if:
 ## What you can configure today
 
 - Disable all E-traces via `e_traces_enabled=False` on the constructor. E1, E2, and E3 are then never registered; the monitor steering injection still runs.
-- Scope E1 retrieval to a customer via `customer_id="..."` on the constructor.
+- E1 retrieval is scoped to your organization automatically — rb-api derives it from your API key's principal. There is no client-side `customer_id` parameter.
 - Influence E2's metadata filter by the monitor-derived `failure_type`. This happens automatically when `MonitorSteeringInjection` returns a classification.
 
 There is currently no public knob to change the E1 gate threshold, the E1/E2/E3 `max_calls`, or the server-side similarity thresholds. {/* TODO: verify whether SDK plans to expose these as constructor kwargs in a future release */}

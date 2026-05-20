@@ -36,7 +36,7 @@ from reasonblocks.types import ETrace
 </ResponseField>
 
 <ResponseField name="failure_type" type="str | None">
-  Categorical failure label from the server's monitor evaluation, e.g. `"loop"`, `"hedge"`, `"edit_revert"`, `"test_repeat"`. `None` when the pattern is not associated with a specific monitor failure.
+  Categorical failure label from the server's monitor evaluation (for example a loop or contradiction label). `None` when the pattern is not associated with a specific monitor failure.
 </ResponseField>
 
 <ResponseField name="model_family" type="str">

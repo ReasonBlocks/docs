@@ -44,9 +44,9 @@ When you build a graph from scratch with `langgraph.graph.StateGraph`, you call 
 
     ```python
     import os
-    from reasonblocks import (
-        DifficultyFSM, ReasonBlocks, SteeringSession, TraceStateManager,
-    )
+    from reasonblocks import ReasonBlocks, SteeringSession
+    from reasonblocks.fsm import DifficultyFSM
+    from reasonblocks.state import TraceStateManager
     from reasonblocks.api import ReasonBlocksAPI
     from reasonblocks.injections import create_injections
     from reasonblocks.monitors import create_monitors

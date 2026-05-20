@@ -1,6 +1,6 @@
 ---
 title: "Advanced configuration"
-description: "Lower-level knobs: FSM thresholds, model routing, live streaming, customer scoping, token-budget tracking, stage-timing instrumentation, and run metadata."
+description: "Lower-level knobs: FSM thresholds, model routing, live streaming, token-budget tracking, stage-timing instrumentation, and run metadata."
 ---
 
 This page covers the parameters most integrations don't need on day one but matter once you're tuning a workload or instrumenting a benchmark.
@@ -20,7 +20,6 @@ rb = ReasonBlocks(
     fsm_thresholds=None,            # default: see DifficultyFSM
     model_routing=None,             # default: no routing
     e_traces_enabled=True,
-    customer_id=None,
     live_streaming_enabled=True,
     task_profile="coding",
 )
@@ -126,15 +125,9 @@ When `live_streaming_enabled=False`:
 
 ---
 
-## Customer scoping for E1
+## E1 scoping
 
-`customer_id` narrows E1 retrieval to patterns distilled from a specific customer's trace history.
-
-```python
-rb = ReasonBlocks(api_key="rb_live_...", customer_id="acme-corp")
-```
-
-When `customer_id` is `None`, E1 retrieves from the global pattern store.
+E1 retrieval is scoped to your organization automatically — rb-api derives the scope from the API key's principal (a per-customer `rb_live_*` key carries its org). There is no client-side `customer_id` parameter on the `ReasonBlocks` constructor or `ReasonBlocksConfig`; runs under the same key share an E1 pattern pool, and other organizations stay isolated.
 
 ---
 

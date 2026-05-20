@@ -12,7 +12,7 @@ Failures inside the middleware hook are logged and swallowed. The middleware nev
 </Note>
 
 ```python
-from reasonblocks import ReasonBlocks, TokenSavingMiddleware, default_suite_signals
+from reasonblocks import ReasonBlocks, TokenSavingMiddleware
 
 rb = ReasonBlocks(api_key="rb_live_...")
 
@@ -21,7 +21,7 @@ agent = create_agent(
     tools=...,
     middleware=[
         rb.middleware(agent_name="reviewer", task="Review PR #42"),
-        TokenSavingMiddleware(signals_fn=default_suite_signals),  # always last
+        TokenSavingMiddleware(),  # always last
     ],
 )
 ```
@@ -54,8 +54,8 @@ agent = create_agent(
   The text injected as a `HumanMessage` when an early-exit nudge fires. The default message instructs the agent to stop investigating and submit its current best answer. Override this to match your agent's specific submission instructions.
 </ParamField>
 
-<ParamField path="signals_fn" type="callable">
-  A function `(steps: list[dict]) -> dict[str, float]` that evaluates the agent's trajectory and returns monitor scores keyed by signal name. The middleware checks the `"streak"`, `"hedge"`, and `"diversity"` keys to decide whether to fire the early-exit nudge. Pass `default_suite_signals` to use the built-in 6-monitor suite. When `None`, the early-exit lever is disabled even if `enable_early_exit=True`.
+<ParamField path="signals_fn" type="callable" default="None">
+  A function `(steps: list[dict]) -> dict[str, float]` that evaluates the agent's trajectory and returns loop-likelihood signals in `[0, 1]`. The middleware checks the `"streak"`, `"hedge"`, and `"diversity"` keys to decide whether to fire the early-exit nudge (any omitted key is treated as `0.0`). There is no built-in implementation — supply your own. When `None` (the default), the early-exit lever is disabled even if `enable_early_exit=True`.
 </ParamField>
 
 <ParamField path="enable_compression" type="boolean" default="True">
@@ -105,7 +105,7 @@ agent = create_agent(
 Every `TokenSavingMiddleware` instance exposes a `stats` attribute of type `TokenSavingStats` that accumulates counters across all `before_model` calls.
 
 ```python
-mw = TokenSavingMiddleware(signals_fn=default_suite_signals)
+mw = TokenSavingMiddleware()
 # ... run the agent ...
 print(mw.stats.compressions)       # number of head+tail compressions applied
 print(mw.stats.chars_saved)        # total characters removed by head+tail compression
@@ -227,34 +227,12 @@ mw = TokenSavingMiddleware(
 
 ---
 
-### `default_suite_signals()`
-
-Runs the built-in 6-monitor suite over a list of agent steps and returns per-monitor scores as a dict. This is the default `signals_fn` for the early-exit lever.
-
-```python
-from reasonblocks import default_suite_signals, build_steps_from_messages
-
-steps = build_steps_from_messages(state["messages"])
-signals = default_suite_signals(steps)
-# {'streak': 0.0, 'hedge': 0.42, 'diversity': 0.15, ...}
-```
-
-<ParamField path="steps" type="list[dict]" required>
-  A list of step dicts in the format produced by `build_steps_from_messages()`. Each dict has keys: `step_index`, `action`, `action_input`, `thought`, `observation`, `is_error`.
-</ParamField>
-
-<ResponseField name="return" type="dict[str, float]">
-  A dict mapping monitor names to float scores. The early-exit lever checks `"streak"`, `"hedge"`, and `"diversity"` keys specifically.
-</ResponseField>
-
----
-
 ### `build_steps_from_messages()`
 
-Converts a LangChain message history into the step dict format expected by `default_suite_signals()` and the monitor suite. Pairs each `AIMessage`'s tool calls with their matching `ToolMessage` objects via `tool_call_id`.
+Converts a LangChain message history into the step dict format your `signals_fn` receives. Pairs each `AIMessage`'s tool calls with their matching `ToolMessage` objects via `tool_call_id`. Use it to build the `steps` argument when writing a custom `signals_fn`.
 
 ```python
-from reasonblocks import build_steps_from_messages
+from reasonblocks.token_saving import build_steps_from_messages
 
 steps = build_steps_from_messages(state["messages"])
 ```
@@ -294,20 +272,14 @@ steps = build_steps_from_messages(state["messages"])
 
 <CodeGroup>
 
-```python Basic compression + early exit
-from reasonblocks import (
-    ReasonBlocks,
-    TokenSavingMiddleware,
-    default_suite_signals,
-)
+```python Compression (no early-exit)
+from reasonblocks import ReasonBlocks, TokenSavingMiddleware
 
 rb = ReasonBlocks(api_key="rb_live_...")
 
 mw = TokenSavingMiddleware(
     compress_threshold_chars=1800,
     keep_recent_tool_messages=2,
-    early_exit_min_call_index=40,
-    signals_fn=default_suite_signals,
 )
 
 agent = create_agent(
@@ -323,13 +295,33 @@ print(f"Chars saved:  {mw.stats.chars_saved}")
 print(f"Early exits:  {mw.stats.early_exits}")
 ```
 
+```python Compression + early-exit
+from reasonblocks import ReasonBlocks, TokenSavingMiddleware
+
+def my_signals(steps: list[dict]) -> dict[str, float]:
+    # Return loop-likelihood signals in [0, 1]; the middleware reads
+    # the "streak", "hedge", and "diversity" keys.
+    return {"streak": 0.0, "hedge": 0.0, "diversity": 0.0}
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+mw = TokenSavingMiddleware(
+    compress_threshold_chars=1800,
+    keep_recent_tool_messages=2,
+    early_exit_min_call_index=40,
+    signals_fn=my_signals,
+)
+
+agent = create_agent(
+    model=...,
+    tools=...,
+    middleware=[rb.middleware(agent_name="reviewer", task="Review PR #5"), mw],
+)
+```
+
 ```python With perplexity compression
 import anthropic
-from reasonblocks import (
-    TokenSavingMiddleware,
-    make_anthropic_classifier,
-    default_suite_signals,
-)
+from reasonblocks import TokenSavingMiddleware, make_anthropic_classifier
 
 classifier = make_anthropic_classifier(
     anthropic.Anthropic(),
@@ -338,7 +330,6 @@ classifier = make_anthropic_classifier(
 )
 
 mw = TokenSavingMiddleware(
-    signals_fn=default_suite_signals,
     enable_perplexity_compression=True,
     perplexity_classifier=classifier,
     perplexity_recent_cutoff=3,

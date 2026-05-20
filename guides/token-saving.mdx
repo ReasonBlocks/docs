@@ -15,7 +15,7 @@ Failures inside the hook are caught and logged; the middleware never breaks the 
 
 ```python
 from langchain.agents import create_agent
-from reasonblocks import TokenSavingMiddleware, default_suite_signals
+from reasonblocks import TokenSavingMiddleware
 
 agent = create_agent(
     model="anthropic:claude-haiku-4-5-20251001",
@@ -25,8 +25,6 @@ agent = create_agent(
         TokenSavingMiddleware(
             compress_threshold_chars=1800,
             keep_recent_tool_messages=2,
-            enable_early_exit=True,
-            signals_fn=default_suite_signals,
         ),
     ],
 )
@@ -37,7 +35,7 @@ agent = create_agent(
 When stacking with `ReasonBlocksMiddleware`, place `TokenSavingMiddleware` last. It runs after steering injections are queued, so any injected content goes out compressed.
 
 ```python
-from reasonblocks import ReasonBlocks, TokenSavingMiddleware, default_suite_signals
+from reasonblocks import ReasonBlocks, TokenSavingMiddleware
 
 rb = ReasonBlocks(api_key="rb_live_...")
 
@@ -47,7 +45,7 @@ agent = create_agent(
     system_prompt="...",
     middleware=[
         rb.middleware(agent_name="bugfixer"),
-        TokenSavingMiddleware(signals_fn=default_suite_signals),
+        TokenSavingMiddleware(),
     ],
 )
 ```
@@ -87,29 +85,33 @@ compressed = compress_tool_output(
 
 ## Early-exit nudge
 
-Once the call index reaches `early_exit_min_call_index` (default 40), the middleware calls `signals_fn(steps)` on each `before_model`. If the signals indicate a loop, it injects a single `HumanMessage` with `early_exit_text`.
+Once the call index reaches `early_exit_min_call_index` (default 40), the middleware calls `signals_fn(steps)` on each `before_model`. If the returned signals indicate a loop, it injects a single `HumanMessage` with `early_exit_text`.
 
-The fire condition is hard-coded in the middleware:
+The fire condition reads three keys from the dict your `signals_fn` returns (any key it omits is treated as `0.0`):
 
-```
+```text
 streak > 0.7
 OR (hedge > 0.6 AND diversity > 0.5)
 ```
 
-`default_suite_signals` runs the shipped 6-monitor suite (`reasonblocks.monitors.suite.evaluate_all`) and returns the per-monitor scores. You can pass any `Callable[[list[step_dict]], dict[str, float]]` instead.
+There is no built-in signals function — you supply one. It takes the trajectory steps and returns those loop-likelihood signals in `[0, 1]`. Compute them however you like; the server-side monitor scores you already collect via telemetry are one source.
 
 ```python
-from reasonblocks import TokenSavingMiddleware, default_suite_signals
+from reasonblocks import TokenSavingMiddleware
+
+def my_signals(steps: list[dict]) -> dict[str, float]:
+    # Return loop-likelihood signals in [0, 1].
+    return {"streak": 0.0, "hedge": 0.0, "diversity": 0.0}
 
 TokenSavingMiddleware(
-    early_exit_min_call_index=40,         # default
-    enable_early_exit=True,               # default
-    signals_fn=default_suite_signals,     # required for early-exit to fire
+    early_exit_min_call_index=40,   # default
+    enable_early_exit=True,         # default
+    signals_fn=my_signals,          # required for early-exit to fire
 )
 ```
 
 <Warning>
-  Setting `signals_fn=None` disables the early-exit check even when `enable_early_exit=True`. The default constructor argument for `signals_fn` is `None` — you must pass `default_suite_signals` (or your own) for early-exit to do anything.
+  `signals_fn` defaults to `None`, which disables the early-exit check even when `enable_early_exit=True`. You must pass a `signals_fn` for early-exit to do anything.
 </Warning>
 
 The default nudge text:
@@ -123,7 +125,7 @@ Override it with `early_exit_text="..."`.
 `TokenSavingMiddleware.stats` is a `TokenSavingStats` dataclass with running counters.
 
 ```python
-ts = TokenSavingMiddleware(signals_fn=default_suite_signals)
+ts = TokenSavingMiddleware()
 agent = create_agent(..., middleware=[rb.middleware(), ts])
 
 with mw:
@@ -151,7 +153,6 @@ For long trajectories where head+tail isn't enough, the middleware can apply LLM
     from reasonblocks.token_saving import (
         TokenSavingMiddleware,
         make_anthropic_classifier,
-        default_suite_signals,
     )
 
     client = anthropic.Anthropic()
@@ -163,7 +164,6 @@ For long trajectories where head+tail isn't enough, the middleware can apply LLM
     )
 
     ts = TokenSavingMiddleware(
-        signals_fn=default_suite_signals,
         enable_perplexity_compression=True,
         perplexity_classifier=classifier,
     )
