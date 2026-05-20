@@ -103,8 +103,48 @@ middleware = build_middleware(
   The early-exit nudge fires only when you pass a `signals_fn` (config field `ts_signals_fn`). Without one, the token-saving stack still delivers the bulk of the savings through tool-output compression.
 </Note>
 
+## A/B test this stack
+
+To prove the cost/accuracy impact on your own tasks, route runs through
+[`ab_middleware`](/api-reference/reasonblocks#ab_middleware) and attach the
+code-review middleware **only on the `on` arm** — keyed off `mw.arm` — so the
+control stays a vanilla agent with telemetry only:
+
+```python
+from langchain.agents import create_agent
+from reasonblocks import ReasonBlocks, GeneralMonitorMiddleware, TokenSavingMiddleware
+
+rb = ReasonBlocks(api_key="rb_live_...")
+
+mw = rb.ab_middleware(
+    experiment_id="cust-acme-q2",
+    unit_id=task.id,          # stable id -> retries stay in the same arm
+    org_id="acme",
+)
+
+stack = [mw]
+if mw.arm == "on":            # full code-review stack only on the treatment arm
+    stack += [
+        GeneralMonitorMiddleware(max_tool_calls=50, pack="v1"),
+        TokenSavingMiddleware(compress_threshold_chars=1800, keep_recent_tool_messages=2),
+    ]
+
+agent = create_agent(
+    model="anthropic:claude-sonnet-4-6",
+    tools=[bash_tool, ...],
+    system_prompt="...",
+    middleware=stack,
+)
+```
+
+`mw.arm` is `"on"` / `"off"` (or `""` outside an experiment). Run your eval set,
+then pull the per-arm report — see [Run an A/B evaluation](/guides/ab-testing).
+The `on` arm now reflects the full code-review stack (steering + general monitor
++ compression); the `off` arm is the vanilla baseline. `requires reasonblocks>=0.2.0`.
+
 ## See also
 
+- [Run an A/B evaluation](/guides/ab-testing) — per-arm cost/accuracy report
 - [Reduce token usage](/guides/token-saving) — `TokenSavingMiddleware` compression, early-exit, and the `signals_fn` contract
 - [Monitors](/concepts/monitors) — the v1 detector pack the general monitor runs
 - [ReasonBlocksConfig](/configuration/reasonblocks-config) — every `ts_*` / `gm_*` knob

@@ -164,7 +164,7 @@ A trimmed real response:
   Two honest limitations:
 
   - The accuracy label is the **self-reported** `outcome`. For a defensible non-inferiority claim, validate a blind sample of labels and keep `outcome` mechanical.
-  - Token-saving compression lives on the separate [`build_middleware`](/configuration/reasonblocks-config) path, **not** in `ab_middleware`. On short, clean tasks the `on` arm adds retrieval/steering text with no compression payoff and can cost *more* (the trimmed example above is a favorable case). The token win shows on long, messy trajectories — evaluate on realistic work.
+  - Token-saving compression isn't in `ab_middleware` by default. To A/B the full code-review stack, attach `TokenSavingMiddleware` / `GeneralMonitorMiddleware` to the `on` arm only via `mw.arm` — see [A/B test this stack](/guides/code-review-mode#a-b-test-this-stack) (`requires reasonblocks>=0.2.0`). On short, clean tasks the `on` arm adds retrieval/steering text with no compression payoff and can cost *more*; the win shows on long, messy trajectories.
 </Warning>
 
 ## Related
