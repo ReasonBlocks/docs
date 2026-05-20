@@ -3,13 +3,13 @@ title: "Run an A/B evaluation"
 description: "Randomly route each agent run to ReasonBlocks ON (full pipeline) or OFF (vanilla), then pull a per-arm report comparing cost, token usage, and task accuracy. Built for proving value during an evaluation."
 ---
 
-`ab_middleware()` flips a deterministic coin per run and returns either the **full ReasonBlocks pipeline** (the "on" arm) or a **vanilla agent** (the "off" arm). Both arms stream telemetry to rb-api, so you can pull a single report that compares them side by side — token/cost deltas, task-accuracy non-inferiority, and a per-day learning curve.
+`ab_middleware()` flips a deterministic coin per run and returns either the **full ReasonBlocks pipeline** (the `on` arm) or a **vanilla agent** (the `off` arm). Both arms stream telemetry, so you can pull one report that compares them side by side: token/cost deltas, task-accuracy non-inferiority, a sample-ratio check, and a per-day learning curve.
 
 <Note>
   Use this for a head-to-head evaluation ("does ReasonBlocks help, and by how much?"). For normal production use, reach for [`middleware()`](/api-reference/reasonblocks#middleware) directly.
 </Note>
 
-## What each arm does
+## How the two arms differ
 
 | | `on` (full ReasonBlocks) | `off` (vanilla control) |
 |---|---|---|
@@ -22,81 +22,158 @@ description: "Randomly route each agent run to ReasonBlocks ON (full pipeline) o
 
 The `off` arm is a true passthrough — the model request is left untouched, so the control isn't quietly getting ReasonBlocks' prompt-cache optimization. It still streams telemetry, so every control run is scored and recorded just like the treatment arm.
 
-## Wire it up
+## Run the experiment
 
-Call `ab_middleware()` once per run with a stable `experiment_id` and a per-unit `unit_id`. Everything else mirrors [`middleware()`](/api-reference/reasonblocks#middleware).
+<Steps>
+  <Step title="Disable the intervention cap for the eval window">
+    Set `INTERVENTION_CAP_ENABLED=false` on rb-api. Otherwise a free-tier org that crosses its monthly cap mid-experiment has its `on` arm silently downgraded to vanilla — corrupting the comparison with no error.
 
-```python
-from langchain.agents import create_agent
-from langchain_anthropic import ChatAnthropic
-from reasonblocks import ReasonBlocks
+    <Warning>
+      Experiment-tagged runs are excluded from the billing meter regardless of this flag, but the cap *gate* (which zeroes retrieval when an org is over quota) only lifts when `INTERVENTION_CAP_ENABLED=false`.
+    </Warning>
+  </Step>
 
-rb = ReasonBlocks(api_key="rb_live_...")
-model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)
+  <Step title="Route each run through ab_middleware()">
+    Call it once per run with a stable `experiment_id` and a per-unit `unit_id`. Everything else mirrors [`middleware()`](/api-reference/reasonblocks#middleware). This is a complete, runnable harness:
 
-for task in tasks:
-    mw = rb.ab_middleware(
-        experiment_id="cust-acme-q2",
-        unit_id=task.id,            # stable id -> retries stay in the same arm
-        on_fraction=0.5,            # 50/50 split
-        agent_name="reviewer",
-        task=task.prompt,
-        model="claude-haiku-4-5-20251001",
-        org_id="acme",
-    )
-    agent = create_agent(model=model, tools=[...], system_prompt="...", middleware=[mw])
-    outcome = "failure"
-    try:
-        result = agent.invoke({"messages": [("user", task.prompt)]})
-        outcome = "success" if task.check(result) else "failure"
-    finally:
-        mw.flush_session(outcome_status=outcome)   # records the run's outcome
-        mw.close(timeout=10)
-```
+    ```python
+    import re
+    from langchain.agents import create_agent
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.tools import tool
+    from reasonblocks import ReasonBlocks
 
-<Tip>
-  Pass a **stable** `unit_id` (a task/ticket id, not a fresh per-attempt run id). Assignment is a hash of `(experiment_id, unit_id)`, so a retried task lands in the same arm and can't contaminate the comparison. Uniform hashing also keeps any sub-population — one repo, one task type — split at ~`on_fraction` for free.
-</Tip>
+    rb = ReasonBlocks(api_key="rb_live_...")
+    model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=512)
 
-The middleware stamps `experiment_id`, `arm`, `assignment_unit`, and `rb_version` onto the run row. rb-api treats `experiment_id` + `arm` as **immutable once set**, so a resume or retry can't relabel a run.
+    @tool
+    def calc(expression: str) -> str:
+        """Evaluate a simple arithmetic expression, e.g. '17 * 23'."""
+        if not re.fullmatch(r"[0-9+\-*/(). ]+", expression or ""):
+            return "invalid expression"
+        return str(eval(expression, {"__builtins__": {}}, {}))
 
-If you just need the arm decision without a middleware (e.g. to route at a different layer), call the assignment function directly:
+    # A fixed eval set with checkable answers -> a mechanical outcome label.
+    TASKS = [("t-1", "compute 17 * 23", "391"), ("t-2", "compute 256 + 389", "645")]
+
+    for task_id, prompt, expected in TASKS:
+        mw = rb.ab_middleware(
+            experiment_id="cust-acme-q2",
+            unit_id=task_id,            # stable id -> retries stay in the same arm
+            on_fraction=0.5,            # 50/50 split
+            agent_name="calc-agent",
+            task=prompt,
+            org_id="acme",
+        )
+        agent = create_agent(
+            model=model,
+            tools=[calc],
+            system_prompt="You are a precise calculator. Use the calc tool, then state the result.",
+            middleware=[mw],
+        )
+        outcome = "failure"
+        try:
+            result = agent.invoke({"messages": [("user", prompt)]})
+            final = next(
+                (m.content for m in reversed(result["messages"])
+                 if getattr(m, "content", None) and not getattr(m, "tool_calls", None)),
+                "",
+            )
+            outcome = "success" if expected in str(final) else "failure"
+        finally:
+            mw.flush_session(outcome_status=outcome)   # records the run's outcome
+            mw.close(timeout=10)
+    ```
+
+    <Tip>
+      Pass a **stable** `unit_id` (a task/ticket id, not a fresh per-attempt run id). Assignment is `hash(experiment_id, unit_id)`, so a retried task lands in the same arm and can't contaminate the comparison. Uniform hashing also keeps any sub-population — one repo, one task type — split at ~`on_fraction` for free.
+    </Tip>
+
+    Make `outcome` a **mechanical** function of run artifacts (a checked answer, tests passing, exit code) — not a judgment that can see the arm. That's what makes the accuracy guardrail credible.
+  </Step>
+
+  <Step title="Pull the report">
+    ```bash
+    curl -sS \
+      "https://rb-api.reasonblocks.com/v1/monitor/experiments/cust-acme-q2/report?org_id=acme&on_fraction=0.5" \
+      -H "Authorization: Bearer $RB_API_KEY"
+    ```
+
+    `on_fraction` is your configured ON probability — used only for the sample-ratio-mismatch (SRM) check. The report is computed live from telemetry on every call; nothing is cached.
+  </Step>
+</Steps>
+
+The middleware stamps `experiment_id`, `arm`, `assignment_unit`, and `rb_version` onto the run row, and rb-api treats `experiment_id` + `arm` as **immutable once set** — a resume or retry can't relabel a run. If you only need the arm decision (to route at a different layer), call the assignment function directly:
 
 ```python
 from reasonblocks import assign_arm
 
-arm = assign_arm("cust-acme-q2", task.id, on_fraction=0.5)  # -> "on" | "off"
+arm = assign_arm("cust-acme-q2", "t-1", on_fraction=0.5)  # -> "on" | "off"
 ```
 
-## Disable the intervention cap for the eval
+## The report
 
-Set `INTERVENTION_CAP_ENABLED=false` on rb-api for the duration of the evaluation. Otherwise a free-tier org that crosses the monthly cap mid-experiment would have its `on` arm silently downgraded to vanilla — corrupting the comparison without any error.
+<ResponseField name="arms.on / arms.off" type="object">
+  Per-arm rollup: `n_runs`, `outcomes` (success/failure/other/unfinished), `success_rate`, `tokens_per_run` (median + winsorized mean), `steps_per_run`, `cost` (input/output/cache-read tokens + `cost_per_run_usd`), and `reasoning_health`.
+</ResponseField>
+<ResponseField name="comparison" type="object">
+  The deltas: `cost_per_run_usd` and `tokens_per_run_median` (ON vs OFF + `pct`), and `success_rate` with a Newcombe `ci_95` plus `success_rate_stratified` (inverse-variance across `task_profile`).
+</ResponseField>
+<ResponseField name="srm" type="object">
+  Sample-ratio-mismatch check: observed vs expected split, chi-square, `p_value`, `flagged`.
+</ResponseField>
+<ResponseField name="timeseries" type="array">
+  Per-day, per-arm cost + accuracy — the learning curve.
+</ResponseField>
+<ResponseField name="caveats" type="array">
+  Auto-generated warnings (wide CI, low token-split coverage, degenerate strata, non-stationarity).
+</ResponseField>
 
-<Warning>
-  Experiment-tagged runs are excluded from the billing meter regardless of this flag, but the cap *gate* (which zeroes retrieval when an org is over quota) only lifts when `INTERVENTION_CAP_ENABLED=false`. Set it for the eval window.
-</Warning>
+A trimmed real response:
 
-## Pull the report
-
-```bash
-curl -sS \
-  "https://rb-api.reasonblocks.com/v1/monitor/experiments/cust-acme-q2/report?org_id=acme&on_fraction=0.5" \
-  -H "Authorization: Bearer $RB_API_KEY"
+```json
+{
+  "arms": {
+    "on":  {"n_runs": 6, "success_rate": 0.83,
+            "tokens_per_run": {"median": 1996},
+            "cost": {"cache_read_tokens": 14400, "cost_per_run_usd": 0.0101}},
+    "off": {"n_runs": 6, "success_rate": 0.83,
+            "tokens_per_run": {"median": 12600},
+            "cost": {"cache_read_tokens": 0, "cost_per_run_usd": 0.063}}
+  },
+  "comparison": {
+    "cost_per_run_usd":      {"on": 0.0101, "off": 0.063, "pct": -0.84},
+    "tokens_per_run_median": {"on": 1996,  "off": 12600, "pct": -0.70},
+    "success_rate": {"on": 0.83, "off": 0.83, "delta": 0.0,
+                     "ci_95": [-0.42, 0.42], "method": "newcombe"}
+  },
+  "srm": {"observed": {"on": 6, "off": 6}, "p_value": 1.0, "flagged": false},
+  "timeseries": [{"day": "2026-05-19", "arm": "on", "tokens_per_run": 1996, "success_rate": 1.0}],
+  "caveats": ["Accuracy CI is wide (±42%); N is too small to bound a tight margin ..."]
+}
 ```
 
-`on_fraction` is your configured ON probability — used only for the sample-ratio-mismatch (SRM) check. The response is computed live from telemetry on every call; nothing is cached.
+## Reading the numbers
 
-### Reading the report
-
-- **`comparison.cost_per_run_usd` / `tokens_per_run_median`** — the primary result. Cost is priced from the per-step input / output / cache-read split, per the model actually used, so model routing is credited. Tokens are the most defensible headline because they're objective.
-- **`comparison.success_rate`** — the accuracy *guardrail*. Reported as a difference with a Newcombe confidence interval, plus a task-profile-stratified interval. Frame it as non-inferiority ("accuracy didn't regress"), not just "no significant difference" — and watch the CI width at small N.
-- **`srm`** — flags if the on/off split drifted from `on_fraction`. A flag often means a bug (the `on` path is dropping runs before they're tagged), not bad luck.
-- **`timeseries`** — per-day, per-arm cost and accuracy. Because distillation runs on **both** arms, the `on` library grows during the window — read this as a learning curve, and treat the earliest (cold-library) buckets as the stationary baseline.
-- **`caveats`** — auto-generated warnings (wide CI, low token-split coverage, degenerate strata, non-stationarity).
+- **Cost / tokens** are the headline — objective and hard to dispute. Cost is priced from the per-step input/output/**cache-read** split per the model actually used, so model routing and prompt-cache effects are both credited.
+- **`success_rate`** is the *guardrail*, not a win condition. Frame it as non-inferiority ("accuracy didn't regress"), and read the **CI width** before claiming "no change" — a wide interval at small N means "not enough data", not "equal".
+- **`srm.flagged`** usually means a *bug* (the `on` path dropping runs before they're tagged), not bad luck — investigate before trusting the rest.
+- **`timeseries`** is a learning curve: distillation runs on **both** arms, so the `on` library grows during the window. Treat the earliest (cold-library) buckets as the stationary baseline.
 
 <Warning>
-  Two honest limitations to keep in mind:
+  Two honest limitations:
 
-  - The accuracy label is the **self-reported** run `outcome`. For a defensible non-inferiority claim, validate a blind sample of labels, and make `outcome` a mechanical function of run artifacts (tests passed, exit code) rather than a judgment that sees the arm.
-  - Token-saving compression lives on the separate [`build_middleware`](/configuration/reasonblocks-config) config path, **not** in `ab_middleware`. On short, clean tasks the `on` arm adds retrieval/steering text without a compression payoff and can cost *more*. The token win shows on long, messy trajectories — evaluate on realistic work.
+  - The accuracy label is the **self-reported** `outcome`. For a defensible non-inferiority claim, validate a blind sample of labels and keep `outcome` mechanical.
+  - Token-saving compression lives on the separate [`build_middleware`](/configuration/reasonblocks-config) path, **not** in `ab_middleware`. On short, clean tasks the `on` arm adds retrieval/steering text with no compression payoff and can cost *more* (the trimmed example above is a favorable case). The token win shows on long, messy trajectories — evaluate on realistic work.
 </Warning>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="ab_middleware() reference" icon="code" href="/api-reference/reasonblocks#ab_middleware">
+    Parameters and the on/off lifecycle.
+  </Card>
+  <Card title="Reduce token usage" icon="gauge" href="/guides/token-saving">
+    Add compression to the ON bundle for the full cost story.
+  </Card>
+</CardGroup>
