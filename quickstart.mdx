@@ -144,10 +144,6 @@ with rb.middleware(agent_name="bugfixer", task="investigate the TypeError") as m
     })
 ```
 
-<Warning>
-  The example scripts in `sdk/examples/` pass `trace_collection_enabled=True` to `ReasonBlocks(...)`. That keyword does not exist on the constructor — calling it that way raises `TypeError`. Drop it from any code copied out of the examples until those scripts are corrected.
-</Warning>
-
 ## Next steps
 
 <CardGroup cols={2}>

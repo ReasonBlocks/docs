@@ -97,4 +97,4 @@ allow E1 if:
 - E1 retrieval is scoped to your organization automatically — rb-api derives it from your API key's principal. There is no client-side `customer_id` parameter.
 - Influence E2's metadata filter by the monitor-derived `failure_type`. This happens automatically when `MonitorSteeringInjection` returns a classification.
 
-There is currently no public knob to change the E1 gate threshold, the E1/E2/E3 `max_calls`, or the server-side similarity thresholds. {/* TODO: verify whether SDK plans to expose these as constructor kwargs in a future release */}
+There is currently no public knob to change the E1 gate threshold, the E1/E2/E3 `max_calls`, or the server-side similarity thresholds.
