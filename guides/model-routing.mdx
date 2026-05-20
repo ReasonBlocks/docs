@@ -33,8 +33,8 @@ rb = ReasonBlocks(
     model_routing={
         "FAST":   "anthropic:claude-haiku-4-5-20251001",
         "NORMAL": "anthropic:claude-haiku-4-5-20251001",
-        "SLOW":   "anthropic:claude-sonnet-4-20250514",
-        "SKIP":   "anthropic:claude-sonnet-4-20250514",
+        "SLOW":   "anthropic:claude-sonnet-4-6",
+        "SKIP":   "anthropic:claude-sonnet-4-6",
     },
 )
 ```
@@ -46,7 +46,7 @@ You don't have to map every state. Omit any you don't want to override:
 rb = ReasonBlocks(
     api_key="rb_live_...",
     model_routing={
-        "SLOW": "anthropic:claude-sonnet-4-20250514",
+        "SLOW": "anthropic:claude-sonnet-4-6",
     },
 )
 ```
@@ -82,7 +82,7 @@ step 6: NORMAL difficulty=0.061
 step 7: FAST -> anthropic:claude-haiku-4-5-20251001 difficulty=0.055
 step 8: FAST -> anthropic:claude-haiku-4-5-20251001 difficulty=0.043
 step 9: NORMAL difficulty=0.731
-step 10: SLOW -> anthropic:claude-sonnet-4-20250514 difficulty=0.812
+step 10: SLOW -> anthropic:claude-sonnet-4-6 difficulty=0.812
 ```
 
 ## Tune the FSM thresholds
@@ -94,7 +94,7 @@ rb = ReasonBlocks(
     api_key="rb_live_...",
     model_routing={
         "FAST": "anthropic:claude-haiku-4-5-20251001",
-        "SLOW": "anthropic:claude-sonnet-4-20250514",
+        "SLOW": "anthropic:claude-sonnet-4-6",
     },
     fsm_thresholds={
         "fast_threshold": 0.15,   # require very-easy steps to drop to FAST

@@ -129,19 +129,19 @@ def search_codebase(query: str) -> str:
 
 model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)
 
-agent = create_agent(
-    model=model,
-    tools=[search_codebase],
-    system_prompt="You are a senior software engineer.",
-    middleware=[rb.middleware(
-        agent_name="bugfixer",
-        task="investigate the TypeError",
-    )],
-)
+# Use the middleware as a context manager so the run is finished and the
+# streaming connection is released on exit.
+with rb.middleware(agent_name="bugfixer", task="investigate the TypeError") as mw:
+    agent = create_agent(
+        model=model,
+        tools=[search_codebase],
+        system_prompt="You are a senior software engineer.",
+        middleware=[mw],
+    )
 
-result = agent.invoke({
-    "messages": [("user", "There's a TypeError in the request handler. Find it.")]
-})
+    result = agent.invoke({
+        "messages": [("user", "There's a TypeError in the request handler. Find it.")]
+    })
 ```
 
 <Warning>

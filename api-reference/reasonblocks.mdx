@@ -34,7 +34,7 @@ rb = ReasonBlocks(
 </ParamField>
 
 <ParamField path="model_routing" type="object">
-  Map FSM state names to model identifiers, e.g. `{"FAST": "anthropic:claude-haiku-4-5-20251001", "SLOW": "anthropic:claude-sonnet-4-20250514"}`. The middleware swaps the model on the next call when the FSM enters that state.
+  Map FSM state names to model identifiers, e.g. `{"FAST": "anthropic:claude-haiku-4-5-20251001", "SLOW": "anthropic:claude-sonnet-4-6"}`. The middleware swaps the model on the next call when the FSM enters that state.
 </ParamField>
 
 <ParamField path="e_traces_enabled" type="boolean" default="True">
@@ -73,12 +73,12 @@ with rb.middleware(
     agent_name="pr-reviewer",
     task="Review PR #42 for correctness",
     framework="langchain",
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-4-6",
     codebase_id="myorg_myrepo",
     metadata={"pr_number": 42, "experiment": "v2"},
 ) as mw:
     agent = create_agent(
-        model=ChatAnthropic(model="claude-sonnet-4-20250514", max_tokens=2048),
+        model=ChatAnthropic(model="claude-sonnet-4-6", max_tokens=2048),
         tools=[...],
         system_prompt="...",
         middleware=[mw],
@@ -280,7 +280,7 @@ from reasonblocks import ReasonBlocks
 rb = ReasonBlocks(api_key="rb_live_...")
 
 async with rb.claude_agent_telemetry(
-    agent_name="reviewer", task="...", model="claude-haiku-4-5",
+    agent_name="reviewer", task="...", model="claude-haiku-4-5-20251001",
 ) as tele:
     async for msg in tele.wrap(query(prompt="...", options={"tools": tools})):
         ...

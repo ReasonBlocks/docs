@@ -69,7 +69,7 @@ For a Claude Messages API integration with a hand-rolled agent loop (where Reaso
             ),
             options={
                 "tools": tools,
-                "model": "claude-haiku-4-5",
+                "model": "claude-haiku-4-5-20251001",
             },
         ):
             for block in getattr(message, "content", None) or []:
@@ -135,10 +135,10 @@ async def main():
     async with rb.claude_agent_telemetry(
         agent_name="reviewer",
         task="investigate MarkerWidget",
-        model="claude-haiku-4-5",
+        model="claude-haiku-4-5-20251001",
     ) as tele:
         async for message in tele.wrap(
-            query(prompt="...", options={"tools": tools, "model": "claude-haiku-4-5"}),
+            query(prompt="...", options={"tools": tools, "model": "claude-haiku-4-5-20251001"}),
         ):
             # process message yourself; telemetry was already emitted
             ...

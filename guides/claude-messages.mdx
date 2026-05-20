@@ -26,7 +26,7 @@ This is the parity path with the LangChain middleware against an Anthropic-nativ
         api_key=os.environ["REASONBLOCKS_API_KEY"],
         model_routing={
             "FAST": "anthropic:claude-haiku-4-5-20251001",
-            "SLOW": "anthropic:claude-sonnet-4-20250514",
+            "SLOW": "anthropic:claude-sonnet-4-6",
         },
     )
     client = Anthropic()

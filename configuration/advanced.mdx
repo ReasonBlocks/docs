@@ -71,8 +71,8 @@ rb = ReasonBlocks(
     model_routing={
         "FAST":   "anthropic:claude-haiku-4-5-20251001",
         "NORMAL": "anthropic:claude-haiku-4-5-20251001",
-        "SLOW":   "anthropic:claude-sonnet-4-20250514",
-        "SKIP":   "anthropic:claude-sonnet-4-20250514",
+        "SLOW":   "anthropic:claude-sonnet-4-6",
+        "SKIP":   "anthropic:claude-sonnet-4-6",
     },
 )
 ```
@@ -180,7 +180,7 @@ mw = rb.middleware(
     run_id="pr-review-42",
     agent_name="reviewer",
     task="review PR #42",
-    model="anthropic:claude-sonnet-4-20250514",
+    model="anthropic:claude-sonnet-4-6",
     org_id="my-org",
     project_id="infra-review",
     metadata={

@@ -28,7 +28,7 @@ from reasonblocks import ReasonBlocks, TokenSavingMiddleware
 rb = ReasonBlocks(api_key="rb_live_...")
 
 agent = create_agent(
-    model="claude-sonnet-4-6",
+    model="anthropic:claude-sonnet-4-6",
     tools=[bash_tool, ...],
     system_prompt="...",
     middleware=[
@@ -54,7 +54,7 @@ from reasonblocks import ReasonBlocks, GeneralMonitorMiddleware, TokenSavingMidd
 rb = ReasonBlocks(api_key="rb_live_...")
 
 agent = create_agent(
-    model="claude-sonnet-4-6",
+    model="anthropic:claude-sonnet-4-6",
     tools=[bash_tool, ...],
     system_prompt="...",
     middleware=[

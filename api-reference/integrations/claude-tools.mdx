@@ -94,7 +94,7 @@ messages = [{"role": "user", "content": "Find the bug in auth/session.py"}]
 
 while True:
     resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         tools=tool_specs,
         messages=messages,
@@ -141,7 +141,7 @@ run_messages_agent_loop(
 </ParamField>
 
 <ParamField path="model" type="str" required>
-  The Anthropic model ID, e.g. `"claude-haiku-4-5-20251001"` or `"claude-sonnet-4-20250514"`.
+  The Anthropic model ID, e.g. `"claude-haiku-4-5-20251001"` or `"claude-sonnet-4-6"`.
 </ParamField>
 
 <ParamField path="messages" type="list[dict]" required>
@@ -198,7 +198,7 @@ tool_specs, dispatch = make_claude_tools(memory, graph)
 
 outcome = run_messages_agent_loop(
     client,
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-4-6",
     messages=[{"role": "user", "content": "Audit the payment module"}],
     tool_specs=tool_specs,
     dispatch=dispatch,
