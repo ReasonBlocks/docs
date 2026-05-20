@@ -1,12 +1,21 @@
 ---
 title: "What is ReasonBlocks?"
-description: "ReasonBlocks is a Python SDK for production AI agents. It works with LangChain, the OpenAI Agents SDK, the Claude Messages API, and the Claude Agent SDK."
+description: "A drop-in SDK that makes production AI agents observable, self-correcting, and cheaper to run — and lets you prove the impact with built-in A/B reporting. Works with LangChain, LangGraph, the OpenAI Agents SDK, and Claude."
 ---
 
-ReasonBlocks is a Python SDK for production AI agents. It works with LangChain, the OpenAI Agents SDK, the Anthropic Messages API, and the Claude Agent SDK. Two capability areas are exposed across these frameworks:
+ReasonBlocks is a drop-in Python SDK for production AI agents. Add one middleware (or a one-line framework adapter) and your agent gains live observability, mid-run failure correction, lower token cost, and an A/B harness to prove the difference.
 
-- **Steering** — score each agent step, evaluate server-side trajectory monitors, inject E-trace guidance from a pattern store, and optionally route the model based on a difficulty FSM. The pipeline is shared via [`SteeringSession`](/api-reference/steering-session) and wired into each framework through a small adapter (LangChain middleware, Claude Messages loop helper, OpenAI Agents `Model` wrapper). The Claude Agent SDK path is telemetry-only because its agent loop runs inside the Claude Code CLI process.
-- **Codebase knowledge** — `CodebaseMemory` for semantic per-repo findings storage and `ImportGraph` for Python blast-radius analysis. Both ship framework-specific tool factories (`make_langchain_tools`, `make_openai_tools`, `make_claude_tools`, `make_claude_agent_sdk_tools`) so the same memory layer plugs into whichever agent runtime you use.
+## The problem
+
+Long-running agents fail in ways you can't see until the bad output — or the bill — lands. They loop on the same action, hedge and backtrack, drift off task, skip verification, and re-read context until the token budget is gone. In production you usually have no window into *why* a run went sideways, and no way to steer it back while it's still running.
+
+## What you get
+
+- **See every run.** Each step streams to a dashboard: reasoning-health scores, which failure-mode monitors fired, tokens, and dollar cost — across every supported framework.
+- **Catch and correct mid-run.** Server-side trajectory monitors detect failure modes (semantic loops, skipped verification, silent topic drift, and more) and inject corrective steering into the agent's next step. Mined corrections and successful patterns are reused across runs from the E-trace library; your instance-level patterns stay scoped to your org.
+- **Spend less.** Route easy steps to a cheaper model, keep the prompt cache intact across turns, compress stale tool outputs, and nudge stuck agents to wrap up — cutting cost without sacrificing accuracy.
+- **Prove it.** Built-in A/B: randomly route runs to ReasonBlocks ON vs a vanilla control, then pull a per-arm report of cost, token, and accuracy deltas. See [Run an A/B evaluation](/guides/ab-testing).
+- **Drop in anywhere.** The same pipeline plugs into LangChain, LangGraph, the OpenAI Agents SDK, the Anthropic Messages API, and the Claude Agent SDK.
 
 ## What works on which framework
 
@@ -18,19 +27,19 @@ ReasonBlocks is a Python SDK for production AI agents. It works with LangChain, 
 | E-trace injection (E1 / E2 / E3) | yes | yes | yes | yes | — |
 | Model routing | yes | yes | yes (with factory) | yes | — |
 | Token-saving compression + early exit | yes | via `create_agent` | — | — | — |
+| A/B evaluation harness | yes | yes | — | — | — |
 | `CodebaseMemory` tool factory | yes | yes | yes | yes | yes |
 | `ImportGraph` blast-radius queries | yes | yes | yes | yes | yes |
 
-LangChain 1.0's `create_agent` is built on LangGraph, so the LangChain and LangGraph rows track each other for `create_agent`-based apps. For hand-rolled `StateGraph`s, the [LangGraph guide](/guides/langgraph) shows how to wire the steering pipeline into your own graph nodes.
+LangChain 1.0's `create_agent` is built on LangGraph, so the LangChain and LangGraph rows track each other for `create_agent`-based apps. For hand-rolled `StateGraph`s, the [LangGraph guide](/guides/langgraph) shows how to wire the steering pipeline into your own graph nodes. The Claude Agent SDK path is telemetry-only because its agent loop runs inside the Claude Code CLI process.
 
-The four entry points are:
+## Entry points
 
-- **`rb.middleware()`** — LangChain 1.0 `AgentMiddleware`. The reference implementation; full pipeline + token-saving + general-monitor middleware compose alongside it.
+- **`rb.middleware()`** — LangChain 1.0 `AgentMiddleware`. The reference implementation; token-saving and general-monitor middleware compose alongside it.
+- **`rb.ab_middleware()`** — same pipeline, wrapped for an A/B evaluation: a deterministic coin routes each run to the full pipeline (`on`) or a vanilla control (`off`), and a per-arm report compares them.
 - **`rb.openai_model(default_model, ...)`** — wraps an `openai-agents` `Model` so `Agent(model=...)` runs the pipeline before each `get_response` call. Pair with an optional `model_factory` to enable model routing.
-- **`rb.claude_messages_session()`** — builds a [`SteeringSession`](/api-reference/steering-session) you pass into [`run_messages_agent_loop(..., session=...)`](/api-reference/integrations/claude-tools#run_messages_agent_loop). The loop drives Anthropic's Messages API tool-use turns and runs steering at every turn.
-- **`rb.claude_agent_telemetry()`** — telemetry-only adapter for the Claude Agent SDK `query()` stream. The agent loop is inside Claude Code, so steering can't apply, but per-tool `run_start` / `step` / `run_finish` events are emitted to the dashboard.
-
-Token-saving compression + early exit are LangChain-only today (the implementation is itself an `AgentMiddleware`).
+- **`rb.claude_messages_session()`** — builds a [`SteeringSession`](/api-reference/steering-session) you pass into [`run_messages_agent_loop(..., session=...)`](/api-reference/integrations/claude-tools#run_messages_agent_loop) to run steering on every Messages-API turn.
+- **`rb.claude_agent_telemetry()`** — telemetry-only adapter for the Claude Agent SDK `query()` stream (steering can't apply inside Claude Code, but `run_start` / `step` / `run_finish` events still reach the dashboard).
 
 ## What the steering pipeline does
 
@@ -39,7 +48,7 @@ On every step of a LangChain agent, the `ReasonBlocks` middleware:
 1. Scores the agent's last reasoning step using a heuristic that combines hedging density, response length, error language, and entity density.
 2. Advances a difficulty FSM (`INIT`, `FAST`, `NORMAL`, `SLOW`, `SKIP`) using the score plus recent history.
 3. Posts the current trace to the ReasonBlocks API's `/monitors/evaluate` endpoint, which runs the monitor suite server-side and returns a steering intervention when the trajectory looks broken.
-4. Retrieves up to three tiers of E-traces from the pattern store: E1 (instance-level, gated by monitor signal), E2 (failure-mode patterns), and E3 (universal rules, fired once on the first call).
+4. Retrieves up to three tiers of E-traces from the pattern store: E1 (instance-level, org-scoped, gated by monitor signal), E2 (failure-mode patterns), and E3 (universal rules, fired once on the first call).
 5. Renders any pending injections into a `[REASONBLOCKS]` block appended to the system message, and overrides the model if `model_routing` maps the current FSM state to a different model.
 6. Streams per-step telemetry to the ReasonBlocks dashboard.
 
@@ -58,11 +67,14 @@ On every step of a LangChain agent, the `ReasonBlocks` middleware:
   <Card title="Model routing" icon="shuffle" href="/guides/model-routing">
     Map FSM states to model identifiers and let the middleware swap models per step.
   </Card>
+  <Card title="A/B evaluation" icon="flask" href="/guides/ab-testing">
+    Route runs ON vs a vanilla control and get a per-arm cost/accuracy report.
+  </Card>
   <Card title="Codebase memory" icon="database" href="/guides/codebase-memory">
     Persist and recall per-repo findings semantically across agent runs.
   </Card>
   <Card title="Token saving" icon="scissors" href="/guides/token-saving">
-    Compress stale tool outputs and exit early when local monitors signal exhaustion.
+    Compress stale tool outputs and exit early when a trajectory looks finished.
   </Card>
 </CardGroup>
 
@@ -78,16 +90,7 @@ On every step of a LangChain agent, the `ReasonBlocks` middleware:
   <Card title="LangChain guide" icon="link" href="/guides/langchain">
     Full middleware walkthrough.
   </Card>
-  <Card title="LangGraph guide" icon="diagram-project" href="/guides/langgraph">
-    Steering for `create_agent` graphs and hand-rolled `StateGraph`s.
-  </Card>
-  <Card title="OpenAI Agents guide" icon="robot" href="/guides/openai-agents">
-    Wrap an `openai-agents` Model with the full steering pipeline.
-  </Card>
-  <Card title="Claude Messages guide" icon="comments" href="/guides/claude-messages">
-    Drive the Anthropic Messages tool-use loop with steering.
-  </Card>
-  <Card title="Claude Agent SDK guide" icon="terminal" href="/guides/claude-agent-sdk">
-    Telemetry + codebase memory tools for the Claude Agent SDK.
+  <Card title="Run an A/B evaluation" icon="flask" href="/guides/ab-testing">
+    Prove the cost/accuracy impact with on/off arms.
   </Card>
 </CardGroup>
