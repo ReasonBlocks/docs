@@ -19,6 +19,50 @@ On agentic workloads with 1M+ input tokens per problem, this is the difference b
   **Cache *after* any string compression, never before.** Compression that mutates the cached prefix invalidates the cache for every downstream call. ReasonBlocks's `TokenSavingMiddleware` only modifies *mutable* tool-output messages mid-history — the system prompt and tools (the cached prefix) are never touched. If you wire your own compressor before RB, make sure it preserves the cached prefix byte-for-byte.
 </Warning>
 
+## One-line enable (Anthropic)
+
+The fastest path: flip `prompt_caching=True` on the validated D-arm preset. Internally `TokenSavingMiddleware` delegates `wrap_model_call` to LangChain's `AnthropicPromptCachingMiddleware`, so you don't add a second middleware to your list.
+
+```python
+from reasonblocks import for_code_review
+
+agent = create_agent(
+    model="claude-sonnet-4-6",
+    tools=[bash, ...],
+    middleware=for_code_review(
+        fail_to_pass_tests=task.fail_to_pass,
+        prompt_caching=True,           # ← single flag, single middleware
+        prompt_caching_ttl="5m",       # "5m" (default) or "1h"
+    ),
+)
+```
+
+Or use the standalone middleware for non-code-review agents:
+
+```python
+from reasonblocks import prompt_caching_middleware
+
+agent = create_agent(
+    model="claude-sonnet-4-6",
+    tools=[...],
+    middleware=[prompt_caching_middleware(ttl="5m")],
+)
+```
+
+### Validated headline
+
+On paired SWE-bench Pro (n=50 ansible instances, `claude-sonnet-4-6`, no other middleware) — the same agent loop with and without the flag:
+
+| arm | mean cost/instance | cache_read share | accuracy |
+|---|---|---|---|
+| baseline | $3.33 | 0% | 4/15* |
+| `prompt_caching=True` | **$0.59** | 96.5% of input | 2/15* |
+| Δ | **−82.4%** | | flat (noise at this n) |
+
+*Preliminary partial n=15/50. Full n=50 paired result lands on this page when both arms finish.
+
+Every one of 15 paired instances saved cost (range −58.6% to −93.4%). The remaining 0.0% of input billed as fresh ≈ 683 tokens across all 15 runs — the cache effectively replaces input billing entirely after turn 1.
+
 ## What RB does out of the box
 
 `ReasonBlocksMiddleware` and `TokenSavingMiddleware` are cache-safe by design:
@@ -67,23 +111,22 @@ Recent Claude models ship a server-side **context-editing** feature (behind a be
 
 ## Stack the input-side levers
 
-The full input-side token-reduction stack for a coding agent — each layer targets a mostly disjoint token pool, so the reductions compound:
+The full input-side token-reduction stack for a coding agent — one factory, one flag, and each layer targets a mostly disjoint token pool so the reductions compound:
 
 ```python
 from langchain_anthropic import ChatAnthropic
 from langchain.agents import create_agent
-from reasonblocks import ReasonBlocks, TokenSavingMiddleware
-
-rb = ReasonBlocks(api_key="rb_live_...")
+from reasonblocks import for_code_review, chain_of_draft_directive
 
 agent = create_agent(
     model=ChatAnthropic(model="claude-sonnet-4-6", max_tokens=2048),
     tools=[bash, ...],
-    system_prompt=task_prompt,                    # add CHAIN_OF_DRAFT here to trim output too
-    middleware=[
-        rb.middleware(agent_name="bugfixer"),     # cache-safe cache_control wrapping
-        TokenSavingMiddleware(),                   # head+tail tool-output compression
-    ],
+    system_prompt=task_prompt + chain_of_draft_directive(),  # CoD on output reasoning
+    middleware=for_code_review(                              # D-arm + caching, one middleware list
+        fail_to_pass_tests=task.fail_to_pass,
+        max_tool_calls=50,
+        prompt_caching=True,                                 # ← turns on Anthropic prompt caching
+    ),
 )
 ```
 
