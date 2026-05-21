@@ -1,0 +1,112 @@
+---
+title: "PR-review trajectory cache"
+description: "Cache successful PR reviews and inject them as prescriptive hints on similar new PRs. Cuts the number of LLM calls per review rather than the cost per call. Provider-agnostic — works on any model that follows instructions."
+---
+
+`PRReviewETraceMiddleware` attacks a different cost pool than prompt caching or tool-output compression. Where those levers shrink *per-call* cost, this one cuts *the number of calls per review* — going from a multi-turn investigation loop to a single synthesis call when the new PR is similar to one you've already reviewed.
+
+It's provider-agnostic. The mechanism is just "inject a prescriptive hint into the first user message," which works the same way on GPT, Claude, and any model that follows instructions.
+
+## How it works
+
+The middleware ties a trajectory store to your agent loop:
+
+1. Every successful PR review is persisted into a store (`PRReviewETraceStore` — local JSON for prototypes, `CodebaseMemory` for production).
+2. On a new PR, the middleware embeds the PR's title + description + diff signature and retrieves the top-K similar past reviews above a cosine threshold.
+3. If a hit clears the gate, the middleware injects the past review as a **prescriptive** hint before the first model call — "verify the diff matches, emit this JSON, don't open files."
+4. The agent recognizes the pattern and emits the review in a single synthesis call.
+5. On a cache miss (cold corpus, low similarity), the middleware is a no-op — zero penalty.
+
+The phrasing of the hint matters: soft hints ("similar PRs found bugs in X") get ignored; prescriptive hints ("emit this JSON directly, don't call tools") consistently trigger single-turn behavior. The validated phrasing lives in `render_skeleton_hint`.
+
+## Quickstart
+
+```python
+from reasonblocks import for_code_review, PRReviewETraceStore
+from langchain.agents import create_agent
+from langchain_openai import ChatOpenAI
+# or: from langchain_anthropic import ChatAnthropic
+
+store = PRReviewETraceStore(save_path="./.rb/pr_etrace.json")
+
+agent = create_agent(
+    model=ChatOpenAI(model="gpt-5.2"),       # or any LangChain-compatible model
+    tools=[bash, search_codebase, read_file],
+    middleware=for_code_review(etrace_store=store),
+)
+
+# After each successful review, persist the trajectory so future similar
+# PRs can hit the cache.
+store.store(
+    pr_signature=current_pr_diff,
+    review=review_json,
+    files_inspected=files_read_during_run,
+)
+```
+
+## Three modes
+
+Pass `etrace_mode=...` on `for_code_review(...)` to control how prescriptive the injected hint is:
+
+| mode | hint shape | when to use |
+|---|---|---|
+| **skeleton** (default) | Full past review JSON + "verify and emit, don't investigate" | Best on exact-or-near-exact matches. Most prescriptive. |
+| **pattern** | Just the bug-pattern tags (e.g. `"silent_except"`, `"math_edge_case"`) from past reviews | Safer on partial matches. Agent verifies each pattern against the current diff. Smaller per-hit savings but lower regression risk. |
+| **adapt** | A cheap-model (gpt-4o-mini) adapts the past review to the new PR before injection | Two-stage; costs ~$0.001 per hit. Use when retrieved trajectories are semantically similar but textually different. |
+
+```python
+middleware = for_code_review(etrace_store=store, etrace_mode="adapt")
+```
+
+## Why the lever holds across providers
+
+E-trace doesn't shrink per-call tokens — it eliminates calls. The percentage saving from going `N calls → 1 call` is roughly the same regardless of which model is doing those calls. The dollar saving scales with how expensive your model is, not which provider it's from.
+
+This makes E-trace **compose cleanly with provider caching**, which targets a disjoint pool (per-call input):
+
+| lever | what it cuts | typical impact |
+|---|---|---|
+| Provider prompt caching | per-call input tokens | varies by provider, see [Prompt caching](/guides/prompt-caching) |
+| E-trace skeleton injection | number of LLM calls per review | depends on cache hit rate against your past-review corpus |
+
+On Claude with both enabled, the compound effect on cache-hit PRs is meaningfully larger than either lever alone:
+
+```python
+agent = create_agent(
+    model=ChatAnthropic(model="claude-sonnet-4-5"),
+    tools=[...],
+    middleware=for_code_review(
+        prompt_caching=True,
+        etrace_store=store,
+    ),
+)
+```
+
+## Expected effective savings
+
+Real-world impact is `cache_hit_rate × per-hit-saving`. Both vary by workload:
+
+- **Bot-generated PRs** (Dependabot / Renovate / similar template-heavy bots) — high repeat structure, high hit rate, big effective savings.
+- **Mature codebase with recurring patterns** — moderate hit rate; lever pays off as the corpus grows.
+- **Brand-new repo / fully diverse PRs** — low hit rate; lever is a no-op, no penalty.
+
+Measure on your own workload before sizing the headline. The store grows with usage, so cold-start savings are 0% and ramp up as the corpus matures.
+
+## When NOT to use it
+
+- **No history yet** — empty store, no retrieval hits, middleware is a no-op. Safe to leave on while you accumulate data.
+- **Adversarial / security-critical reviews** — you probably want the agent to do fresh investigation rather than rely on prior conclusions.
+- **PRs that are structurally one-of-a-kind** — every retrieval misses the gate, middleware never fires.
+
+## What pairs with it
+
+Two complementary levers in the SDK that target disjoint cost pools:
+
+- [Prompt caching](/guides/prompt-caching) — cuts per-call input cost on the turns that DO happen.
+- [Code-review mode](/guides/code-review-mode) — the validated SWE-bench Pro D-arm monitor + tool-saving stack. E-trace stacks on top of it.
+
+## See also
+
+- [Code-review mode](/guides/code-review-mode) — the validated SWE-bench Pro D-arm stack
+- [Codebase memory](/guides/codebase-memory) — the production-grade store that backs E-trace persistence
+- [Prompt caching](/guides/prompt-caching) — provider caching that composes cleanly with E-trace
