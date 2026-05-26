@@ -1,0 +1,148 @@
+---
+title: "Use ReasonBlocks with browser-use"
+description: "Drop-in orchestration layer for browser-use agents: multi-tier prompt caching, compressed system prompt, browser-state compression, and monitor-driven steering."
+---
+
+`reasonblocks.browser_use` ships a three-line integration on top of any existing `browser-use` agent setup. It applies a stack of cache-safe runtime patches plus a compressed system prompt — no architectural rewrite.
+
+## Validated results
+
+Reproducible single-config result, BU Bench V1, Claude Opus 4.7, n=100, 4-way concurrent runs:
+
+| Variant | Pass | Total cost |
+| --- | --- | --- |
+| browser-use default | 66 / 100 | $603.01 |
+| with ReasonBlocks SDK | 67 / 100 | $427.00 |
+
+That's a -29% cost reduction with +1 accuracy task. Results are from a single SDK configuration (no per-task swapping, no cherry-picking across runs).
+
+## What you get
+
+- Multi-tier prompt cache breakpoints anchored at stable `<step>` positions in the conversation
+- Tool-description slim (4k → ~760 chars)
+- Browser-state compressor (drops low-signal lines deterministically)
+- Screenshot prune (keeps last 2 in deterministic build order)
+- Compressed system prompt (~7.4k chars vs default ~24k) with a terse-output discipline + a completion-criteria checklist
+- Monitor-driven nudges (loop detection, premature-giveup, step-budget)
+- 1h cache TTL so cross-task sweeps hit warm cache
+
+<Steps>
+  <Step title="Install">
+    The browser-use extra pulls in `browser-use` and the Anthropic client. Use whichever package manager you already have on the project.
+
+    ```bash
+    pip install "reasonblocks[browser-use]"
+    ```
+  </Step>
+
+  <Step title="Wire it in (three lines)">
+    Import `apply`, `RBChat`, and `AGENT_KWARGS`. Call `apply()` once at process start before constructing `Agent`, wrap your existing `ChatAnthropic` (or any browser-use `BaseChatModel`) with `RBChat`, and splat `AGENT_KWARGS` into the `Agent` constructor.
+
+    ```python
+    from reasonblocks.browser_use import apply, RBChat, AGENT_KWARGS
+    from browser_use import Agent, Browser
+    from browser_use.llm import ChatAnthropic
+
+    apply()  # patches browser-use's serializer, prompts, controller (idempotent)
+
+    llm = RBChat(ChatAnthropic(model="claude-opus-4-7", max_tokens=8192))
+    browser = Browser(use_cloud=True, cloud_timeout=60)
+
+    agent = Agent(
+        task="Find the 2024 Nobel laureates in Physics and their PhD institutions.",
+        llm=llm,
+        browser=browser,
+        **AGENT_KWARGS,
+    )
+
+    history = await agent.run()
+    ```
+
+    <Note>
+      `apply()` is idempotent — calling it twice in the same process is a no-op. The patch is global to the Python process, which is the intended behavior for production agent loops.
+    </Note>
+  </Step>
+
+  <Step title="Inspect per-call usage">
+    `RBChat` records every API call on `llm.calls` as a list of `{usage, compacted, ...}` dicts. You can compute cost and cache-hit metrics post-hoc without touching the Anthropic SDK directly.
+
+    ```python
+    total_in    = sum(c["usage"].get("prompt_tokens", 0)        for c in llm.calls)
+    cached_read = sum(c["usage"].get("prompt_cached_tokens", 0) for c in llm.calls)
+    total_out   = sum(c["usage"].get("completion_tokens", 0)    for c in llm.calls)
+
+    print(f"calls={len(llm.calls)} in={total_in} cached={cached_read} out={total_out}")
+    ```
+  </Step>
+</Steps>
+
+## Conservative vs aggressive defaults
+
+`AGENT_KWARGS` is conservative by default — it only sets `use_thinking=False`. Cost savings come from the orchestration layer, not from starving the agent of visual or DOM context.
+
+```python
+from reasonblocks.browser_use import AGENT_KWARGS, AGENT_KWARGS_AGGRESSIVE
+
+# Conservative (validated default):
+#   use_thinking=False
+agent = Agent(task=..., llm=llm, **AGENT_KWARGS)
+
+# Aggressive (trades 2-3 accuracy tasks for ~7pp more cost saving):
+#   use_thinking=False
+#   vision_detail_level="low"
+#   max_clickable_elements_length=20000
+agent = Agent(task=..., llm=llm, **AGENT_KWARGS_AGGRESSIVE)
+```
+
+The aggressive variant cuts image tokens 3-5x and halves the DOM payload per call. We measured this on BU Bench V1: meaningful additional cost saving but a small accuracy regression.
+
+## Toggling individual levers
+
+`apply()` enables every validated lever by default. Toggle individually if you want to A/B a single dimension.
+
+```python
+apply(
+    ttl_1h=True,                      # 1h Anthropic cache TTL (default 5m)
+    tool_slim=True,                   # shorten tool descriptions
+    browser_state_compress=True,      # drop low-signal lines from state text
+    screenshot_prune_keep=2,          # keep last N screenshots; 0 disables
+    multi_cache_breakpoints=True,     # multiple cache_control anchors per turn
+    chunked_state_caching=True,       # cache anchored on stable <step> markers
+    tool_result_trim=False,           # opt-in: clamp search_page / find_elements
+)
+```
+
+<Note>
+  `tool_result_trim` is opt-in. It clamps `search_page` to the top 5 matches at 80-char context and `find_elements` to the top 10 elements — a large win on long-conversation tasks but bleeds accuracy on tasks that need full search dumps to resolve specific facts. Enable per-task after measuring on your workload.
+</Note>
+
+## How caching works
+
+The default `browser-use` `cache_control` strategy keeps only the latest breakpoint, which means the conversation history is never cached on subsequent steps. The SDK keeps up to 4 breakpoints anchored at fixed `<step>` positions in the agent history. Those anchors stay byte-identical across turns, so each anchor creates an independent cache prefix that hits on every subsequent step.
+
+Combined with `ttl_1h`, sweeps across many tasks within the same hour-long window hit warm system+tools cache from turn 0 of every task after the first.
+
+## Counting cost
+
+Anthropic prices the four token classes differently. The SDK does not bill — you compute cost from `llm.calls` directly using whatever rates your account is on.
+
+```python
+PRICE_IN          = 15.00 / 1e6
+PRICE_CACHE_READ  = 1.50  / 1e6
+PRICE_CACHE_WRITE = 18.75 / 1e6
+PRICE_OUT         = 75.00 / 1e6
+
+def call_cost(usage: dict) -> float:
+    return (
+        usage.get("prompt_tokens",                  0) * PRICE_IN
+        + usage.get("prompt_cached_tokens",         0) * PRICE_CACHE_READ
+        + usage.get("prompt_cache_creation_tokens", 0) * PRICE_CACHE_WRITE
+        + usage.get("completion_tokens",            0) * PRICE_OUT
+    )
+
+total = sum(call_cost(c["usage"]) for c in llm.calls)
+```
+
+## Compatibility
+
+The SDK monkey-patches the installed `browser_use` package at runtime — specifically the Anthropic serializer, the agent prompts, and the controller's tool formatters. It is verified against `browser-use>=0.12.6`. Pin to that minimum and check `apply()` log lines (`RB lever N applied: ...`) at startup to confirm every patch took.
