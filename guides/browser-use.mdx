@@ -76,6 +76,46 @@ That's a -29% cost reduction with +1 accuracy task. Results are from a single SD
   </Step>
 </Steps>
 
+## Dashboard reporting
+
+Set `REASONBLOCKS_API_KEY` before importing the SDK and `RBChat` streams per-call and per-run telemetry to the RB dashboard — same `/monitor/...` endpoints the LangChain middleware uses. Non-blocking (queue + daemon worker), so per-step posts never block the agent's hot path.
+
+```bash
+export REASONBLOCKS_API_KEY=rb_live_XXXXXXXX
+```
+
+```python
+llm = RBChat(
+    ChatAnthropic(model="claude-opus-4-7", max_tokens=8192),
+    task="Find the 2024 Nobel Physics laureates and their PhD institutions.",
+    agent_name="boldin-research-bot",   # optional, shows on the dashboard
+)
+
+agent = Agent(task=..., llm=llm, browser=browser, **AGENT_KWARGS)
+await agent.run()
+
+llm.flush(outcome="completed")           # explicit run_finish + drain
+# or llm.mark_done(outcome="failure: timeout") on known failure
+```
+
+If `REASONBLOCKS_API_KEY` is unset, `RBChat` quietly skips the dashboard emit and only populates `llm.calls` locally — no errors. A startup log line confirms which mode you're in:
+
+```
+[RB portal] enabled — run_id=bu-1339af747c61 base=https://rb-api.reasonblocks.com key=<token len=24 tail=...mZI>
+```
+
+or:
+
+```
+[RB portal] disabled — set REASONBLOCKS_API_KEY to stream per-call usage to the dashboard.
+```
+
+<Note>
+  `flush()` is idempotent and there's an `atexit`-bound safety net, so a script that forgets to call it still delivers `run_finish` before the daemon worker dies. Calling it explicitly is recommended so you can pass an accurate `outcome` (`"success"` / `"failure: <reason>"`).
+</Note>
+
+You can also pass `api_key=` and `base_url=` directly to `RBChat(...)` if you don't want to rely on env vars, plus `org_id` / `project_id` for multi-tenant scope and `run_metadata={...}` for ad-hoc fields that ride along on the run row.
+
 ## Conservative vs aggressive defaults
 
 `AGENT_KWARGS` is conservative by default — it only sets `use_thinking=False`. Cost savings come from the orchestration layer, not from starving the agent of visual or DOM context.
