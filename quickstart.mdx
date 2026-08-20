@@ -1,162 +1,78 @@
 ---
 title: "Quickstart"
-description: "Install the SDK, create a ReasonBlocks client, and add the middleware to a LangChain agent."
+description: "From your first captured run to a promoted small model."
 ---
 
-This guide adds ReasonBlocks to a LangChain 1.0 agent. By the end, your agent has step scoring, server-side monitor evaluation, and E-trace injection on every run, and each run streams to the ReasonBlocks dashboard.
+## 1. Run the capture proxy
 
-<Note>
-  ReasonBlocks supports three agent frameworks: LangChain, the OpenAI Agents SDK, and the Claude Agent SDK / Claude Messages API. The full steering pipeline (FSM + monitors + E-traces + model routing) ships as a LangChain middleware, so this quickstart is LangChain-shaped. For the other two, see the [OpenAI Agents guide](/guides/openai-agents) and the [Claude Agent SDK guide](/guides/claude-agent-sdk) — both ship telemetry hooks (where applicable) and the codebase memory tool factories.
-</Note>
+```bash
+git clone <trace-reconstructor repo> && cd trace-reconstructor
+pip install -e .
 
-<Steps>
-  <Step title="Install the SDK">
-    Install ReasonBlocks from PyPI. Python 3.10 or later is required.
-
-    ```bash
-    pip install reasonblocks
-    ```
-
-    `langchain>=1.0` and `httpx>=0.27` are installed automatically.
-  </Step>
-
-  <Step title="Get your API key">
-    Log in to the [ReasonBlocks dashboard](https://app.reasonblocks.com) and copy your API key from the **Quickstart** page. Keys start with `rb_live_`.
-
-    The SDK does not read environment variables for the key — your code passes it to the constructor explicitly. Storing it in an environment variable is still the recommended pattern; just read it yourself:
-
-    ```bash
-    export REASONBLOCKS_API_KEY=rb_live_...
-    ```
-
-    <Tip>
-      The dashboard's Quickstart page also shows your `org_id` and `project_id` next to a copy-pasteable snippet.
-    </Tip>
-  </Step>
-
-  <Step title="Initialize the client">
-    Import `ReasonBlocks` and pass the API key. The client is reusable across runs — create it once at startup, then call `rb.middleware()` once per agent invocation.
-
-    ```python
-    import os
-    from reasonblocks import ReasonBlocks
-
-    rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
-    ```
-  </Step>
-
-  <Step title="Add the middleware to your agent">
-    Pass `rb.middleware()` in the `middleware` list when you create your agent.
-
-    ```python
-    from langchain.agents import create_agent
-
-    agent = create_agent(
-        model="anthropic:claude-haiku-4-5-20251001",
-        tools=[...],
-        system_prompt="You are a senior software engineer.",
-        middleware=[rb.middleware()],
-    )
-    ```
-
-    The middleware hooks four points in the LangChain agent loop:
-
-    - **`before_agent`** — emits the `run_start` telemetry event.
-    - **`before_model`** — scores the last step, advances the FSM, evaluates monitors server-side, and queues E-trace injections.
-    - **`wrap_model_call`** — overrides the model if routing applies, renders queued injections into the system message, and records token usage.
-    - **`after_agent`** — emits the `run_finish` telemetry event.
-  </Step>
-
-  <Step title="Tag the run for the dashboard">
-    `rb.middleware()` accepts identifying metadata. All fields are optional.
-
-    ```python
-    agent = create_agent(
-        model="anthropic:claude-haiku-4-5-20251001",
-        tools=[...],
-        system_prompt="You are a senior software engineer.",
-        middleware=[rb.middleware(
-            run_id="my-run-1",                # auto-generated if omitted
-            agent_name="bugfixer",            # free-form filter key
-            task="fix the TypeError",
-            framework="langchain",
-            model="claude-haiku-4-5-20251001",
-            codebase_id="myrepo@sha:abc123",
-            org_id="default",                 # uuid; "default" if omitted
-            project_id="default",             # uuid; "default" if omitted
-            metadata={"experiment": "A"},     # free-form extra tags
-        )],
-    )
-    ```
-
-    These values land on the `monitor_runs` row in rb-api and surface in the dashboard's **Runs** table.
-
-    <Note>
-      When your API key is a per-customer `rb_live_*` key bound to an org, rb-api overrides `org_id` and `project_id` with the key's authoritative scope. Most callers can leave them at `"default"`.
-    </Note>
-  </Step>
-
-  <Step title="Run your agent">
-    Invoke the agent normally.
-
-    ```python
-    result = agent.invoke({
-        "messages": [("user", "There's a TypeError in the request handler. Find and fix it.")]
-    })
-    ```
-
-    After the run completes, open the dashboard to see the scored steps, FSM transitions, and any monitor signals or E-trace injections that fired.
-  </Step>
-</Steps>
-
-## Complete example
-
-A minimal end-to-end script using a LangChain agent with mock tools:
-
-```python
-import os
-from langchain.agents import create_agent
-from langchain_anthropic import ChatAnthropic
-from langchain_core.tools import tool
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(api_key=os.environ["REASONBLOCKS_API_KEY"])
-
-@tool
-def search_codebase(query: str) -> str:
-    """Search the codebase for files matching a query."""
-    return f"No results for {query!r}"
-
-model = ChatAnthropic(model="claude-haiku-4-5-20251001", max_tokens=1024)
-
-# Use the middleware as a context manager so the run is finished and the
-# streaming connection is released on exit.
-with rb.middleware(agent_name="bugfixer", task="investigate the TypeError") as mw:
-    agent = create_agent(
-        model=model,
-        tools=[search_codebase],
-        system_prompt="You are a senior software engineer.",
-        middleware=[mw],
-    )
-
-    result = agent.invoke({
-        "messages": [("user", "There's a TypeError in the request handler. Find it.")]
-    })
+python -m rbtrace.proxy --db data/captures/capture.duckdb --note production
+# or: docker compose up -d
 ```
 
-## Next steps
+## 2. Point your agent at it
 
-<CardGroup cols={2}>
-  <Card title="Installation options" icon="package" href="/installation">
-    Constructor parameters and self-hosted base URLs.
-  </Card>
-  <Card title="How it works" icon="gear" href="/concepts/how-it-works">
-    The middleware lifecycle in detail.
-  </Card>
-  <Card title="Model routing" icon="shuffle" href="/guides/model-routing">
-    Map FSM states to model identifiers.
-  </Card>
-  <Card title="LangChain guide" icon="link" href="/guides/langchain">
-    Full integration walkthrough.
-  </Card>
-</CardGroup>
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+python your_agent.py     # unchanged otherwise; your API key passes through, never stored
+```
+
+Optionally stamp exact run boundaries (recommended for production accuracy):
+
+```python
+import rbtrace.client
+rbtrace.client.install()
+
+with rbtrace.client.run():       # one run id per job
+    agent.handle(task)
+```
+
+## 3. Check what you've collected
+
+```bash
+python -m rbtrace inspect data/captures/capture.duckdb
+python -m rbtrace trace data/captures/capture.duckdb --format rb_trace_v1 -o traces.jsonl
+```
+
+The trace command reports how many runs support universal claims — those are the
+runs the distillation pipeline is allowed to learn from.
+
+## 4. Distill
+
+```bash
+export FIREWORKS_API_KEY=fw_...
+export FIREWORKS_ACCOUNT_ID=accounts/your-account
+
+# Free dry run: builds the dataset, touches no paid API
+python -m rbtrace distill data/captures/capture.duckdb --tenant acme --dry-run
+
+# The real thing
+python -m rbtrace distill data/captures/capture.duckdb --tenant acme
+```
+
+The pipeline runs `dataset → sft_v1 → eval_v1 → rft → sft_v2 → eval_v2 → report`,
+checkpointing each stage under `distill-acme/`. Interrupted runs resume; if the
+capture doesn't yet hold enough complete runs it exits cleanly with "not ready", so
+you can run it on a schedule and let it fire when collection catches up.
+
+## 5. Read the report
+
+`distill-acme/REPORT.md` gives you the held-out shadow-fidelity table (tuned vs
+untrained base, with the repair-turn subset broken out), the promotion verdict, and
+the serving contract. If a model was promoted, it is live on your Fireworks account
+under `rb-<tenant>-slm-v2`.
+
+<Warning>
+Serve the model **exactly as trained**: the transcript flattened into one role-tagged
+user turn with the training instruction appended (`rbtrace.distill.dataset.render_flat`).
+A flat-trained model served multi-turn silently underperforms.
+</Warning>
+
+## Tuning the pipeline
+
+Pass `--config distill.json` to override any knob — holdout fraction, example caps,
+base model, LoRA rank, spend ceiling, promotion margin. See `distill.example.json`
+in the repo for the full set with defaults.
