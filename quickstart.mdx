@@ -1,92 +1,152 @@
 ---
 title: "Quickstart"
-description: "From your first captured run to a promoted small model."
+description: "Copy your gateway URL from the dashboard, set one environment variable, and let ReasonBlocks capture, train a cheaper task-specific model, and serve it with frontier-model fallback."
 ---
 
-## 1. Run the capture proxy
+ReasonBlocks hosts the capture gateway, storage, trace reconstruction, distillation pipeline,
+and relegation serving. Your integration starts in the dashboard, not on a local server.
+
+## 1. Get your gateway URL
+
+Sign in to [app.reasonblocks.com](https://app.reasonblocks.com) and open **Quickstart**.
+
+Copy your tenant gateway URL. It looks like:
 
 ```bash
-git clone <trace-reconstructor repo> && cd trace-reconstructor
-pip install -e .
-
-python -m rbtrace.proxy --db data/captures/capture.duckdb --note production
-# or: docker compose up -d
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 ```
 
-## 2. Point your agent at it
+Use the exact URL shown in the dashboard. Do not substitute `localhost` unless you are
+[self-hosting the gateway](/deployment#advanced-self-hosting-the-gateway).
+
+## 2. Set the environment variable and run your agent
+
+Set `ANTHROPIC_BASE_URL` before starting your agent. Use your existing Anthropic API key as
+you always have. ReasonBlocks passes it through to upstream and **never stores it**.
 
 ```bash
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
-python your_agent.py     # unchanged otherwise; your API key passes through, never stored
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+export ANTHROPIC_API_KEY="sk-ant-..."   # your existing key; unchanged
+python your_agent.py                     # no other code changes required
 ```
 
-Optionally stamp exact run boundaries (recommended for production accuracy):
+Your agent speaks the Anthropic Messages protocol to ReasonBlocks when using
+`ANTHROPIC_BASE_URL`. OpenAI and other providers use the same gateway with different base URL
+env vars. See [Endpoint compatibility](/endpoint-compatibility). The gateway is
+byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
 
-```python
-import rbtrace.client
-rbtrace.client.install()
+For proven run boundaries (recommended before distillation), see [Client integration](/client-integration).
+**Tier B or C** adds a small client shim; the gateway stays hosted.
 
-with rbtrace.client.run():       # one run id per job
-    agent.handle(task)
-```
+## 3. Confirm capture in the dashboard
 
-## 3. Check what you've collected
+After a few agent runs, open the dashboard **Captures** view (or the Quickstart progress panel).
+
+You should see:
+
+- Exchange count growing as your agent runs
+- Runs labeled **golden** (eligible for training) or **not** (incomplete or violated, excluded from mining)
+
+You do not need local DuckDB files or `rbtrace inspect` for the default path. ReasonBlocks
+reconstructs traces on hosted storage automatically.
+
+## 4. Start training (hosted, opt-in)
+
+Training is **opt-in** and **tenant-scoped**. ReasonBlocks does not train on your traffic
+until you start a job from the dashboard (or an approved automation hook).
+
+In the dashboard:
+
+1. Open **Distillation** (or **Train** on Quickstart).
+2. Confirm you have enough **golden** runs for this workflow. If not, the UI shows "not ready"
+   and you can keep capturing until the threshold is met.
+3. Start a run. ReasonBlocks mines policies from your golden traces and fine-tunes a **cheaper
+   task-specific model** on your workflow.
+
+Training runs on ReasonBlocks infrastructure under your tenant. You configure spend limits and
+schedules in the dashboard, not by SSHing into a capture host.
+
+## 5. Read the training report
+
+When a job finishes, open the **Report** in the dashboard.
+
+The report includes:
+
+- Training summary and model identifier
+- Serving contract (flat transcript format)
+- Whether relegation routing is ready to enable
+
+## 6. Enable relegation serving (same env var)
+
+Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL. Enable serving in the dashboard
+when the report says the model is ready.
+
+**How routing works:**
+
+1. **Cheaper model first.** Most steps go to your task-specific model trained on this workflow.
+2. **Frontier fallback.** When the cheaper model lacks coverage or fails a step, ReasonBlocks
+   routes that request to your frontier model. Your agent still sees one API; the gateway
+   handles the switch.
+3. **Continuous improvement.** Fallback episodes are captured as edge cases and feed the next
+   training cycle so coverage expands over time.
+
+The agent still speaks Anthropic Messages. ReasonBlocks serves the flat transcript contract
+from the training report.
+
+<Warning>
+Serve the model **exactly as trained**: the transcript flattened into one role-tagged user
+turn with the training instruction appended (`render_flat`). A flat-trained model served
+multi-turn silently underperforms.
+</Warning>
+
+## Optional: client shim (Tier B / C)
+
+If you need high **golden** yield (batch workers, multi-job processes), install the client
+shim in your agent environment:
 
 ```bash
-python -m rbtrace inspect data/captures/capture.duckdb
-python -m rbtrace trace data/captures/capture.duckdb --format rb_trace_v1 -o traces.jsonl
+pip install rbtrace   # when published to PyPI
 ```
 
-The trace command reports how many runs support universal claims — those are the
-runs the distillation pipeline is allowed to learn from.
+Then follow [Client integration](/client-integration) for `rbtrace.client.install()` and
+optional `with rbtrace.client.run():` per job. The gateway URL and capture path are unchanged.
 
-## 4. Distill
+## Advanced: run the pipeline locally
+
+Use this only when you operate the gateway and storage yourself. See
+[Deployment](/deployment#advanced-self-hosting-the-gateway).
 
 ```bash
+pip install rbtrace   # when published; or install from a release artifact
+
+python -m rbtrace inspect /path/to/capture.duckdb
+python -m rbtrace trace /path/to/capture.duckdb --format rb_trace_v1 -o traces.jsonl
+
 export FIREWORKS_API_KEY=fw_...
 export FIREWORKS_ACCOUNT_ID=accounts/your-account
-
-# Free dry run: builds the dataset, touches no paid API
-python -m rbtrace distill data/captures/capture.duckdb --tenant acme --dry-run
-
-# The real thing
-python -m rbtrace distill data/captures/capture.duckdb --tenant acme
+python -m rbtrace distill /path/to/capture.duckdb --tenant acme --dry-run
+python -m rbtrace distill /path/to/capture.duckdb --tenant acme
 ```
 
-The pipeline runs `dataset → sft_v1 → eval_v1 → rft → sft_v2 → eval_v2 → report`,
-checkpointing each stage under `distill-acme/`. Interrupted runs resume; if the
-capture doesn't yet hold enough complete runs it exits cleanly with "not ready", so
-you can run it on a schedule and let it fire when collection catches up.
-
-## 5. Read the report
-
-`distill-acme/REPORT.md` gives you the held-out shadow-fidelity table (tuned vs
-untrained base, with the repair-turn subset broken out), the promotion verdict, and
-the serving contract. If a model was promoted, it is live on your Fireworks account
-under `rb-<tenant>-slm-v2`.
-
-## 6. Serve through the same env var
-
-After promotion, keep `ANTHROPIC_BASE_URL` pointed at the proxy and flip serving:
+Self-hosted relegation serving after a local training run (implementation uses env vars from
+the distill output directory):
 
 ```bash
 export RBTRACE_DISTILL_DIR=./distill-acme
-export RBTRACE_SERVE_MODE=shadow   # teacher + student; always return teacher; log disagreement
-# when ready:
-export RBTRACE_SERVE_MODE=student  # only if report.json names a promoted_model
+# Enable relegation routing on the gateway host (see trace-reconstructor operator docs)
 ```
 
-Restart the proxy. The agent still speaks Anthropic Messages; the proxy flattens
-with `render_flat` and the instruction from `report.json` / `mined.json`.
+Pass `--config distill.json` to override holdout fraction, example caps, base model, LoRA rank,
+and spend ceiling. Defaults are in `distill.example.json` on the
+[`trace-reconstructor`](https://github.com/ReasonBlocks/trace-reconstructor) repo.
 
-<Warning>
-Serve the model **exactly as trained**: the transcript flattened into one role-tagged
-user turn with the training instruction appended (`rbtrace.distill.dataset.render_flat`).
-A flat-trained model served multi-turn silently underperforms.
-</Warning>
+## Next steps
 
-## Tuning the pipeline
-
-Pass `--config distill.json` to override any knob — holdout fraction, example caps,
-base model, LoRA rank, spend ceiling, promotion margin. See `distill.example.json`
-in the repo for the full set with defaults.
+<CardGroup cols={2}>
+  <Card title="Client integration" icon="plug" href="/client-integration">
+    Tier A, B, or C: how much agent-side code to add.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment">
+    Hosted gateway and pipeline; self-hosting appendix.
+  </Card>
+</CardGroup>

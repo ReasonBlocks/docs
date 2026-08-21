@@ -5,3 +5,17 @@
 # Draft content
 drafts/
 *.draft.mdx
+
+# Legacy steering SDK / rb-api middleware docs (not published)
+installation.mdx
+concepts/
+guides/
+configuration/
+troubleshooting/
+api-reference/steering-session.mdx
+api-reference/codebase-memory.mdx
+api-reference/import-graph.mdx
+api-reference/token-saving-middleware.mdx
+api-reference/types/
+api-reference/integrations/
+api-reference/rest-api/

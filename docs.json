@@ -2,7 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "name": "ReasonBlocks",
   "theme": "mint",
-  "favicon": "/favicon.svg",
+  "favicon": "/favicon.png",
   "logo": {
     "light": "/logo/rb-light.png",
     "dark": "/logo/rb-dark.png"
@@ -32,79 +32,15 @@
             "pages": [
               "introduction",
               "quickstart",
-              "installation"
+              "client-integration",
+              "deployment"
             ]
           },
           {
-            "group": "Concepts",
+            "group": "Reference",
             "pages": [
-              "concepts/how-it-works",
-              "concepts/fsm-states",
-              "concepts/e-traces",
-              "concepts/monitors"
-            ]
-          },
-          {
-            "group": "Using ReasonBlocks",
-            "pages": [
-              "guides/langchain",
-              "guides/langgraph",
-              "guides/openai-agents",
-              "guides/claude-messages",
-              "guides/claude-agent-sdk",
-              "guides/model-routing",
-              "guides/codebase-memory",
-              "guides/token-saving",
-              "guides/code-review-mode",
-              "guides/chain-of-draft",
-              "guides/prompt-caching",
-              "guides/pr-review-etrace",
-              "guides/ab-testing",
-              "configuration/reasonblocks-config",
-              "configuration/monitor-profiles",
-              "configuration/advanced",
-              "troubleshooting/faq",
-              "troubleshooting/common-issues"
-            ]
-          },
-          {
-            "group": "Connectors and sync",
-            "pages": [
-              "api-reference/integrations/langchain-tools",
-              "api-reference/integrations/claude-tools",
-              "api-reference/integrations/openai-tools"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "API Reference",
-        "groups": [
-          {
-            "group": "SDK Classes",
-            "pages": [
-              "api-reference/reasonblocks",
-              "api-reference/steering-session",
-              "api-reference/codebase-memory",
-              "api-reference/import-graph",
-              "api-reference/token-saving-middleware"
-            ]
-          },
-          {
-            "group": "Types",
-            "pages": [
-              "api-reference/types/fsm-state",
-              "api-reference/types/step-record",
-              "api-reference/types/e-trace"
-            ]
-          },
-          {
-            "group": "REST API",
-            "pages": [
-              "api-reference/rest-api/overview",
-              "api-reference/rest-api/setup",
-              "api-reference/rest-api/custom-harness-quickstart",
-              "api-reference/rest-api/versioning"
+              "endpoint-compatibility",
+              "api-reference/reasonblocks"
             ]
           }
         ]

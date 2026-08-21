@@ -1,0 +1,171 @@
+---
+title: "Endpoint compatibility"
+description: "LLM API paths, client SDKs, upstream routing, and which features apply per endpoint on the ReasonBlocks gateway."
+---
+
+The hosted gateway is a **byte-transparent reverse proxy**. Your client sends normal provider
+HTTP requests; ReasonBlocks forwards them to the configured upstream with the same path and
+query string. There is no fixed allowlist of routes.
+
+**Default product path:** Anthropic Messages (`POST /v1/messages`) via
+`ANTHROPIC_BASE_URL`. That path has the best trace reconstruction, supports training, and
+**relegation serving** (cheaper model first, frontier fallback). It matches how most agent
+frameworks call Claude today.
+
+Other common endpoints (OpenAI Chat Completions, Responses API, Gemini, etc.) work for
+**capture and passthrough** when upstream routing is set correctly. Relegation serving
+(cheaper model + frontier fallback) applies only to `POST /v1/messages`.
+
+## Upstream routing (operator / hosted config)
+
+ReasonBlocks sets upstream routing on hosted gateways. Self-hosters configure:
+
+| Variable | Default | Role |
+| --- | --- | --- |
+| `AGENTRECON_UPSTREAM_BASE` | `https://api.anthropic.com` | Base URL; client path appended verbatim |
+| `AGENTRECON_PROVIDER` | `anthropic` | Label on capture metadata only |
+
+To forward OpenAI-shaped clients, point upstream at OpenAI:
+
+```bash
+export AGENTRECON_UPSTREAM_BASE=https://api.openai.com
+```
+
+Hosted tenants: use the dashboard gateway URL; do not change upstream unless your account
+supports multi-provider routing there.
+
+## Common LLM API paths
+
+Paths the optional client shim treats as LLM calls (for `X-RB-Run` / `X-RB-Seq` headers).
+All other paths still forward through the catch-all proxy.
+
+| Client path | Typical upstream | Agent env var |
+| --- | --- | --- |
+| `POST /v1/messages` | Anthropic API | `ANTHROPIC_BASE_URL` |
+| `POST /v1/chat/completions` | OpenAI API | `OPENAI_BASE_URL` |
+| `POST /v1/responses` | OpenAI API | `OPENAI_BASE_URL` |
+| `POST /v1/complete` | OpenAI API | `OPENAI_BASE_URL` |
+| `POST …:generateContent` | Google Generative Language API | Provider base URL + gateway |
+| Other (`/v1/models`, Azure paths, etc.) | Your provider | Base URL pointed at gateway |
+
+### Anthropic (default)
+
+```bash
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+export ANTHROPIC_API_KEY="sk-ant-..."   # passthrough; never stored
+python your_agent.py
+```
+
+Works with the Anthropic SDK, LangChain, CrewAI, and any client that respects
+`ANTHROPIC_BASE_URL`.
+
+### OpenAI Chat Completions
+
+Gateway upstream must be OpenAI (hosted config or self-hosted `AGENTRECON_UPSTREAM_BASE`):
+
+```bash
+export OPENAI_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+export OPENAI_API_KEY="sk-..."   # passthrough; never stored
+```
+
+Client calls `POST /v1/chat/completions` on the gateway; traffic forwards to OpenAI.
+Capture works; structured golden traces and relegation serving are **weaker or unavailable**
+on this path (see below).
+
+### OpenAI Responses API
+
+Same pattern as Chat Completions: `OPENAI_BASE_URL` at the gateway, upstream
+`https://api.openai.com`, path `/v1/responses`.
+
+### Gemini and other providers
+
+Point the client base URL at the gateway and set `AGENTRECON_UPSTREAM_BASE` to the provider
+origin (for example `https://generativelanguage.googleapis.com`). URLs containing
+`:generateContent` are recognized by the client shim for run headers.
+
+## Framework compatibility
+
+| Client | Configuration |
+| --- | --- |
+| Anthropic SDK (Python/TS) | `ANTHROPIC_BASE_URL` → gateway |
+| LangChain | Inherits `ANTHROPIC_BASE_URL` |
+| CrewAI | Inherits `ANTHROPIC_BASE_URL` |
+| OpenAI SDK | `OPENAI_BASE_URL` → gateway + OpenAI upstream |
+| LiteLLM / httpx-based stacks | Base URL override to gateway |
+| Custom HTTP | Any method/path the catch-all accepts |
+
+API keys pass through upstream and are **not stored** by ReasonBlocks.
+
+## Feature matrix by endpoint
+
+| Feature | `POST /v1/messages` | OpenAI-shaped paths | Gemini / other |
+| --- | --- | --- | --- |
+| Raw capture | Yes | Yes | Yes |
+| Structured reconstruction | Best | Partial | Sparse |
+| Golden runs for distillation | Yes (Tier B/C recommended) | Limited | Not recommended |
+| Relegation serving | Yes (cheaper model + frontier fallback) | No (upstream passthrough only) | No |
+
+Training and relegation serving use flat Anthropic-shaped transcripts. If your workflow
+must use the cheaper model path, run the agent on **`/v1/messages`** even if you also capture
+other provider traffic.
+
+## Relegation serving (Anthropic path only)
+
+After training, keep the same gateway URL. Relegation routing affects **only**
+`POST /v1/messages`:
+
+| Routing | Behavior |
+| --- | --- |
+| **Cheaper model** | Trained task-specific model handles the step first |
+| **Frontier fallback** | Frontier model when the cheaper model lacks coverage or fails |
+| **Edge cases** | Fallback traffic is captured for the next training cycle |
+
+OpenAI-shaped requests are not rewritten to the cheaper model. They passthrough to
+`AGENTRECON_UPSTREAM_BASE`.
+
+Enable relegation in the dashboard (hosted) or via gateway config (self-hosted). See
+[Quickstart](/quickstart) steps 5–6.
+
+## Client shim paths
+
+When using [Tier B or C](/client-integration), `rbtrace.client.install()` stamps run headers
+on requests matching:
+
+- `/v1/messages`
+- `/v1/chat/completions`
+- `/v1/responses`
+- `/v1/complete`
+- paths containing `:generateContent`
+
+Install: `pip install rbtrace` (when published to PyPI).
+
+## Gateway admin endpoints
+
+Not forwarded to upstream:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/__rbtrace/stats` | Health, queue depth, exchange counts |
+| `POST`, `GET` | `/__rbtrace/flush` | Flush batched writes before backup |
+| `POST` | `/__rbtrace/writer/kill` | Fail-open testing |
+
+Self-hosted operators: see [Deployment](/deployment#advanced-self-hosting-the-gateway).
+
+## Limitations
+
+- Upstream failures return **502** with Anthropic-shaped error JSON regardless of client type.
+- Cheaper-model responses are synthesized Anthropic Messages JSON (or a single SSE burst), not
+  native provider streaming.
+- Integration tests in the gateway codebase focus on `POST /v1/messages`; other paths are
+  supported by architecture but less validated end-to-end.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Client integration" icon="plug" href="/client-integration">
+    Tier A/B/C and the optional shim.
+  </Card>
+  <Card title="Gateway reference" icon="book" href="/api-reference/reasonblocks">
+    Env vars and serve contract.
+  </Card>
+</CardGroup>

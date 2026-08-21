@@ -1,75 +1,88 @@
 ---
 title: "What is ReasonBlocks?"
-description: "Drop in an API proxy, collect your agent's traces, and come out with a fine-tuned small model that replaces the big one — automatically, and only if it proves itself on your own held-out workflow."
+description: "Set one environment variable, capture your agent's workflow, and train a cheaper task-specific model with automatic fallback to your frontier model when coverage runs out."
 ---
 
-ReasonBlocks distills the expensive frontier model behind your production agent into a
-small model trained on your agent's own captured behavior. Integration is one
-environment variable; everything downstream — trace reconstruction, dataset mining,
-training, evaluation, promotion — is automated.
+ReasonBlocks captures how your production agent handles **its specific task**, then trains a
+**cheaper model** personalized to that workflow. This is not a generic small model or a shared
+checkpoint. Integration is one environment variable. ReasonBlocks hosts trace reconstruction,
+dataset mining, training, and serving on **your** golden traces.
 
 ## The problem
 
 Production agents run the biggest model on every step because nothing smaller can be
-trusted with the workflow. But most of what a mature agent does is deeply repetitive:
-the same tools, the same verify scripts, the same repair moves against the same gate
-failures. You are paying frontier prices — often hundreds or thousands of dollars per run —
-for behavior a 32B model can learn from a few dozen recorded sessions.
+trusted with the workflow. Most of what a mature agent does is deeply repetitive: the same
+tools, the same verify scripts, the same repair moves against the same gate failures. You
+pay frontier prices (often hundreds or thousands of dollars per run) for behavior a
+task-specific model can learn from a few dozen recorded sessions of **that** agent doing
+**that** job.
 
 ## How it works
 
 <Steps>
-  <Step title="Point your agent at the proxy">
-    Set `ANTHROPIC_BASE_URL` to the ReasonBlocks capture proxy. Your API key passes
-    through untouched (it is never stored); every exchange is captured durably. The
-    proxy is byte-transparent and fail-open: if capture ever breaks, your traffic
-    doesn't.
+  <Step title="Route traffic through ReasonBlocks">
+    Copy your gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com) and set
+    it before running your agent:
+
+    ```bash
+    export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+    ```
+
+    With `ANTHROPIC_BASE_URL` pointed at your hosted ReasonBlocks gateway, your agent speaks
+    its native protocol directly to ReasonBlocks. Your Anthropic API key passes through
+    untouched and is never stored. Every exchange is captured to hosted storage. The gateway
+    is byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
   </Step>
   <Step title="Traces reconstruct themselves">
-    The reconstruction layer turns raw traffic into verified runs — ordered steps,
-    tool calls paired to their results, injected corrections identified structurally.
-    Only runs proven to be observed *whole* are eligible for training.
+    ReasonBlocks reconstructs raw traffic into verified runs on hosted storage: ordered steps,
+    tool calls paired to their results, and injected corrections identified structurally. Runs
+    are labeled **golden** (proven complete, no violations) or **not**. Only golden runs from
+    your workflow are eligible for training. You can review status in the dashboard; no local
+    database required.
   </Step>
-  <Step title="The distillation pipeline runs">
-    `rbtrace distill` mines (state → action) pairs from complete runs, fine-tunes a
-    32B student on them, evaluates it against held-out sessions, runs one round of
-    verifier-gated rejection sampling, retrains, and re-evaluates.
+  <Step title="Policies are mined from golden traces">
+    Tool vocabulary, helper scripts, and flat (state → action) pairs are extracted from
+    **your** traffic, not configured by hand. When you have enough golden traces from this
+    task (or on a schedule you set in the dashboard), ReasonBlocks starts mining automatically.
   </Step>
-  <Step title="A model is promoted — or honestly isn't">
-    The student is promoted only when it beats the untrained base model on your own
-    held-out states by a margin. The report names the model and the serving contract,
-    or tells you exactly why nothing shipped.
+  <Step title="A cheaper task-specific model is trained">
+    The hosted pipeline mines (state → action) pairs from complete runs and fine-tunes a
+    smaller model for your tenant on **your** workflow. Training is opt-in and tenant-scoped.
+  </Step>
+  <Step title="Relegation routing goes live">
+    After training completes, the gateway routes traffic to your **cheaper model first**.
+    When the model lacks coverage or hits an edge case it cannot handle, ReasonBlocks
+    **falls back to your frontier model** (the one you already use). Fallback episodes
+    become training signal so the cheaper model improves on those edge cases over time. Same
+    `ANTHROPIC_BASE_URL`; your agent code unchanged. Weights stay scoped to your tenant.
   </Step>
 </Steps>
 
 ## What makes it trustworthy
 
-- **Completeness is proven, not assumed.** A run with a hole in it is never mined;
-  the reconstruction layer proves each run was captured whole before the pipeline
-  may quantify over it.
-- **A deterministic step verifier guards every sampled action** — known tool, real
-  helper script, well-formed arguments — with the valid vocabulary mined from your
-  own traces rather than configured by hand.
-- **Whole-action selection only.** Rejection sampling keeps or drops complete
-  actions; nothing selects on sub-action criteria, which measurably mines verifier
-  false positives.
-- **Spend ceilings everywhere.** Training jobs are cancelled the moment the
-  provider's own cost estimate crosses your cap; GPU deployments tear down in
-  `finally`.
+- **Completeness is proven, not assumed.** A run with a hole in it is never mined. The
+  reconstruction layer proves each run was captured whole before the pipeline may quantify
+  over it.
+- **Actions are validated against your workflow.** Sampled steps must use known tools,
+  real helper scripts, and well-formed arguments from vocabulary mined from your own traces.
+- **Whole-action selection only.** Rejection sampling keeps or drops complete actions.
+  Nothing selects on partial steps, which avoids low-quality training pairs.
+- **Spend ceilings everywhere.** Training jobs are cancelled the moment the provider's own
+  cost estimate crosses your cap. GPU deployments tear down in `finally`.
 
 ## Get started
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Proxy to promoted model, end to end.
+    Dashboard URL → env var → capture → distill → serve.
   </Card>
-  <Card title="Installation" icon="package" href="/installation">
-    Run the capture proxy and the pipeline.
+  <Card title="Client integration" icon="plug" href="/client-integration">
+    Tier A, B, or C: how much agent-side code to add.
+  </Card>
+  <Card title="Endpoint compatibility" icon="network-wired" href="/endpoint-compatibility">
+    Anthropic, OpenAI, Gemini, and other LLM API paths.
+  </Card>
+  <Card title="Deployment" icon="server" href="/deployment">
+    Hosted gateway and pipeline (default); self-hosting appendix.
   </Card>
 </CardGroup>
-
-<Note>
-The pages under **Using ReasonBlocks** and the SDK API reference document the
-previous ReasonBlocks steering SDK, which remains available while existing
-deployments migrate. New integrations should start from the capture proxy above.
-</Note>

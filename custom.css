@@ -25,7 +25,7 @@
    intentionally NOT included — they stay in Inter as body text.          */
 .sidebar-group-header,
 .sidebar-group-header h5,
-#sidebar-title,
+.sidebar-group-header .sidebar-title,
 .eyebrow,
 #table-of-contents button,
 #table-of-contents button span,
@@ -39,13 +39,21 @@
 
 .sidebar-group-header,
 .sidebar-group-header h5,
-#sidebar-title {
+.sidebar-group-header .sidebar-title {
   color: rgb(var(--gray-600)) !important;
 }
 .dark .sidebar-group-header,
 .dark .sidebar-group-header h5,
-.dark #sidebar-title {
+.dark .sidebar-group-header .sidebar-title {
   color: rgb(var(--gray-400)) !important;
+}
+
+/* TOC links: mono labels need explicit vertical rhythm */
+#table-of-contents-content a {
+  display: block;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  line-height: 1.45 !important;
 }
 
 /* Top nav tabs (Documentation, API Reference) — mono with normal casing,
@@ -57,20 +65,32 @@
   font-weight: 500 !important;
 }
 
-/* ---- Constrain content to a centered, narrow column ---------------------
-   Mint's default `lg:pl-[23.7rem] xl:w-[calc(100%-28rem)]` lets paragraphs
-   stretch wide and sit left-aligned on big screens. Pin a max-width and
-   center it, clamping the left margin so it never slides under the fixed
-   left sidebar (18rem).                                                  */
+/* ---- Reading column inside Mintlify's three-column grid -----------------
+   Do NOT center #content-area against the viewport — that stacks on top of
+   Mint's sidebar offset and leaves a huge gap before crowding the TOC.     */
 @media (min-width: 1024px) {
   #content-area {
-    max-width: 56rem !important;        /* 50rem reading + 2*3rem padding */
-    width: auto !important;             /* override mint's xl:w-[calc(...)] */
-    margin-left: max(20rem, calc((100% - 56rem) / 2)) !important;
-    margin-right: auto !important;
-    padding-left: 3rem !important;
-    padding-right: 3rem !important;
+    max-width: 48rem !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding-left: 2rem !important;
+    padding-right: 2.5rem !important;
   }
+}
+
+@media (min-width: 1280px) {
+  #content-side-layout {
+    gap: 2.5rem;
+  }
+
+  #table-of-contents-layout {
+    padding-left: 1.5rem !important;
+  }
+}
+
+/* Keep last sidebar links clear of the Mintlify assistant chip */
+#sidebar-content {
+  padding-bottom: 5rem;
 }
 
 /* ---- Pagination footer: prev left, next right --------------------------

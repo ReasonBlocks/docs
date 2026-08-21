@@ -1,382 +1,146 @@
 ---
-title: "ReasonBlocks class reference"
-description: "API reference for the ReasonBlocks class — constructor options, middleware(), openai_hooks(), and the score_step() heuristic scorer."
+title: "Gateway integration reference"
+description: "Hosted capture gateway: environment variables, optional client shim, and protocol contract for agents using ReasonBlocks."
 ---
 
-`ReasonBlocks` is the main entry point for the SDK. Create one instance per process, passing your API key and any global configuration, then call `middleware()` or `openai_hooks()` once per agent run to get a fresh, run-scoped object.
+This is the default integration surface for ReasonBlocks: route agent traffic through your
+**hosted gateway**, capture workflow traces, and serve a cheaper task-specific model with frontier-model fallback through
+the same URL.
 
-## Constructor
+For the step-by-step flow, start with [Quickstart](/quickstart). For tier selection (env
+var only vs client shim), see [Client integration](/client-integration).
+
+## Gateway URL
+
+Copy your tenant gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com)
+Quickstart:
+
+```bash
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+```
+
+| Item | Detail |
+| --- | --- |
+| Protocol | Anthropic Messages (`POST /v1/messages`) is the primary path. OpenAI and other LLM APIs are supported for capture. See [Endpoint compatibility](/endpoint-compatibility). |
+| API key | Your existing `ANTHROPIC_API_KEY`; passes through upstream, **never stored** |
+| Agent code | Unchanged except `ANTHROPIC_BASE_URL` (Tier A) |
+| Failure mode | Byte-transparent, fail-open: if capture breaks, traffic still flows |
+
+---
+
+## Agent environment variables
+
+### `ANTHROPIC_BASE_URL`
+
+**Required** for capture and serving.
+
+<ParamField path="ANTHROPIC_BASE_URL" type="string" required>
+  Hosted gateway URL from the dashboard. Must be set **before** the agent process starts.
+  After training, keep the same URL. Enable relegation serving in the dashboard (cheaper
+  model first, frontier-model fallback on edge cases).
+</ParamField>
+
+```bash
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+export ANTHROPIC_API_KEY="sk-ant-..."   # unchanged; passthrough only
+```
+
+### `ANTHROPIC_API_KEY`
+
+Your Anthropic API key. ReasonBlocks forwards it to upstream on each request. It is not
+persisted in capture storage.
+
+### `RBTRACE_DISABLE`
+
+**Optional.** Used with Tier B/C client shim only.
+
+<ParamField path="RBTRACE_DISABLE" type="string" default="unset">
+  Set to `1` to disable the client shim without removing code. Capture continues through the
+  gateway; run grouping falls back to Tier A (passive inference). See
+  [Client integration — Kill switches](/client-integration#kill-switches).
+</ParamField>
+
+---
+
+## Client shim (Tier B / C)
+
+Install in the **agent** environment when you need proven run boundaries for distillation:
+
+```bash
+pip install rbtrace   # when published to PyPI
+```
+
+<ParamField path="rbtrace.client.install()" type="function">
+  Call once at process startup. Stamps `X-RB-Run` and `X-RB-Seq` on outbound LLM HTTP
+  requests (via `httpx`). Does not replace the gateway; `ANTHROPIC_BASE_URL` must still point
+  at ReasonBlocks.
+</ParamField>
+
+<ParamField path="rbtrace.client.run()" type="context manager">
+  **Tier C only.** One fresh run id per `with` block. Use in batch loops, worker pools, and
+  threaded workers so distinct jobs do not merge into one trace.
+</ParamField>
 
 ```python
-from reasonblocks import ReasonBlocks
+import rbtrace.client
 
-rb = ReasonBlocks(
-    api_key="rb_live_...",
-    token_budget=50_000,
-    task_profile="pr_review",
-)
+rbtrace.client.install()
+
+for task in tasks:
+    with rbtrace.client.run():
+        run_agent(task)
 ```
 
-<ParamField path="api_key" type="string" required>
-  Your ReasonBlocks API key. Production keys start with `rb_live_`; test keys with `rb_test_`. When you use a per-customer live key, the server overrides `org_id` and `project_id` with the key's authoritative scope automatically.
-</ParamField>
-
-<ParamField path="base_url" type="string">
-  Override the API base URL. Set this when pointing the SDK at a self-hosted deployment or a staging environment. When omitted, the SDK connects to the ReasonBlocks hosted API.
-</ParamField>
-
-<ParamField path="token_budget" type="integer">
-  Soft cap on tokens tracked by the trace state manager. Stored on `TraceState.token_budget` and used by downstream consumers that surface budget pressure. Leave unset to run without a cap.
-</ParamField>
-
-<ParamField path="fsm_thresholds" type="object">
-  Override the difficulty FSM's transition thresholds. Forwarded as kwargs to `DifficultyFSM`; recognized keys include `fast_threshold`, `slow_threshold`, `skip_threshold`, `hysteresis_margin`, `fast_window`, `slow_window`, `skip_window`. Leave unset to use the defaults.
-</ParamField>
-
-<ParamField path="model_routing" type="object">
-  Map FSM state names to model identifiers, e.g. `{"FAST": "anthropic:claude-haiku-4-5-20251001", "SLOW": "anthropic:claude-sonnet-4-6"}`. The middleware swaps the model on the next call when the FSM enters that state.
-</ParamField>
-
-<ParamField path="e_traces_enabled" type="boolean" default="True">
-  Whether to retrieve and inject E-trace patterns from the server. Set to `False` to skip the retrieval round-trip — useful in local development or CI environments without rb-api access.
-</ParamField>
-
-<ParamField path="monitor_names" type="list[str] | None" default="None">
-  Accepted for backward compatibility but currently a no-op on the middleware path — the monitor suite runs server-side. Custom local monitors require a custom injection.
-</ParamField>
-
-<ParamField path="live_streaming_enabled" type="boolean" default="True">
-  Whether to stream `run_start`, per-step, and `run_finish` events to rb-api as the agent runs. Disable for fully offline or air-gapped deployments. When `False`, no `MonitorClient` or `StreamingEmitter` is constructed and the dashboard will not see this run.
-</ParamField>
-
-<ParamField path="task_profile" type="string" default='"coding"'>
-  Selects the monitor weight vector on the server. Built-in profiles are `"coding"` (the default), `"pr_review"` (weights `semantic_loop` highest for read-only review agents), and `"qa"` (weights `claim_contradiction` and `silent_topic_drift` highest for question-answering agents). See [Monitor profiles](/configuration/monitor-profiles) for the per-profile weight tables. The profile is stamped on every `run_start` event and persisted on the run row.
-</ParamField>
+Full tier decision tree: [Client integration](/client-integration).
 
 ---
 
-## `middleware()`
+## What the gateway captures
 
-Creates a fresh `ReasonBlocksMiddleware` instance scoped to a single agent run. Call this once per run, not once per step.
+Each Anthropic Messages request/response pair that transits the gateway is written to hosted
+storage. ReasonBlocks reconstructs runs server-side and labels them:
 
-<CodeGroup>
+| Label | Meaning |
+| --- | --- |
+| **golden** | Proven complete run; eligible for distillation (`supports_universal_claims: true`) |
+| **not** | Incomplete or violated; excluded from mining |
 
-```python LangChain 1.0
-from langchain.agents import create_agent
-from langchain_anthropic import ChatAnthropic
-from reasonblocks import ReasonBlocks
+Review counts in the dashboard. Tier B/C increases **golden** yield for multi-job processes.
 
-rb = ReasonBlocks(api_key="rb_live_...")
-
-with rb.middleware(
-    run_id="run-abc-123",
-    agent_name="pr-reviewer",
-    task="Review PR #42 for correctness",
-    framework="langchain",
-    model="claude-sonnet-4-6",
-    codebase_id="myorg_myrepo",
-    metadata={"pr_number": 42, "experiment": "v2"},
-) as mw:
-    agent = create_agent(
-        model=ChatAnthropic(model="claude-sonnet-4-6", max_tokens=2048),
-        tools=[...],
-        system_prompt="...",
-        middleware=[mw],
-    )
-    result = agent.invoke({"messages": [("user", "Review PR #42")]})
-```
-
-```python Marking failure explicitly
-with rb.middleware(agent_name="summarizer", task="Summarize issue #7") as mw:
-    try:
-        result = agent.invoke({"messages": [("user", "...")]})
-    except RecursionError:
-        mw.mark_failure(reason="recursion_limit")
-        raise
-```
-
-</CodeGroup>
-
-<ParamField path="run_id" type="string">
-  Unique identifier for this run. When omitted, the SDK generates one from the trace state manager. Provide your own when you want to correlate the dashboard row with an external ID (CI job, PR number, etc.).
-</ParamField>
-
-<ParamField path="agent_name" type="string" default='""'>
-  Human-readable name for the agent. Displayed in the dashboard run list.
-</ParamField>
-
-<ParamField path="task" type="string" default='""'>
-  Short description of what this run is trying to accomplish. Stored on the run row.
-</ParamField>
-
-<ParamField path="framework" type="string" default='"langchain"'>
-  Agent framework identifier. Stored for diagnostic filtering.
-</ParamField>
-
-<ParamField path="model" type="string" default='""'>
-  Model identifier used by the agent. Stored on the run row.
-</ParamField>
-
-<ParamField path="codebase_id" type="string" default='""'>
-  Associates this run with a specific codebase in the findings store. Use the same value you pass to `CodebaseMemory`.
-</ParamField>
-
-<ParamField path="org_id" type="string" default='"default"'>
-  Multi-tenant organization scope. When the api_key is a per-customer live key, rb-api overrides this with the key's authoritative org.
-</ParamField>
-
-<ParamField path="project_id" type="string" default='"default"'>
-  Multi-tenant project scope within `org_id`. Same override behavior as `org_id`.
-</ParamField>
-
-<ParamField path="metadata" type="object">
-  Free-form key–value tags attached to the run row and surfaced as JSON in the dashboard.
-</ParamField>
-
-### Returns
-
-<ResponseField name="ReasonBlocksMiddleware" type="middleware">
-  A LangChain `AgentMiddleware` subclass. Also a context manager (`with rb.middleware(...) as mw:`) that emits `run_finish` and closes the streaming emitter on exit. Inside an `__exit__` an exception sets the outcome to `failure: <ExceptionName>`; a clean exit defaults to `success`. Call `mw.mark_failure(reason="...")` before the context exits to override the default. Call `mw.close(timeout=5.0)` to drain the emitter explicitly outside a `with` block.
-</ResponseField>
+For OpenAI Chat Completions, Responses API, Gemini, and other paths, see
+[Endpoint compatibility](/endpoint-compatibility).
 
 ---
 
-## `ab_middleware()`
+## Training and relegation serving (hosted)
 
-Builds a run-scoped middleware for an A/B evaluation. Flips a deterministic coin (`assign_arm`) and returns either the full pipeline (`on`) or a vanilla passthrough control (`off`). Both arms force live telemetry on and stamp `experiment_id` / `arm` / `assignment_unit` / `rb_version` onto the run. See the [A/B evaluation guide](/guides/ab-testing) for the end-to-end flow and how to read the report.
+Training and relegation routing run on ReasonBlocks infrastructure under your tenant. Start
+jobs and read reports in the dashboard; see [Quickstart](/quickstart) steps 4–6.
 
-```python
-from reasonblocks import ReasonBlocks
+After training, serving uses the same `ANTHROPIC_BASE_URL` with a **flat** transcript contract
+(`render_flat`). Multi-turn serving of a flat-trained model silently underperforms; see the
+Warning on [Quickstart](/quickstart).
 
-rb = ReasonBlocks(api_key="rb_live_...")
-
-mw = rb.ab_middleware(
-    experiment_id="cust-acme-q2",
-    unit_id="ticket-1843",      # stable -> retries stay in the same arm
-    on_fraction=0.5,
-    agent_name="reviewer",
-    task="Review PR #42",
-    org_id="acme",
-)
-# mw.arm is recorded on the run; use mw with create_agent(..., middleware=[mw])
-```
-
-<ParamField path="experiment_id" type="string" required>
-  Identifier shared by every run in the experiment. Stamped on the run and used as the report key (`GET /v1/monitor/experiments/{experiment_id}/report`). Immutable on the run once set.
-</ParamField>
-
-<ParamField path="unit_id" type="string">
-  Randomization unit. Hashed with `experiment_id` to pick the arm, so the same unit always lands in the same arm. Pass a **stable** task/ticket id if you want retries to stay in their arm; defaults to the run id (each attempt drawn independently).
-</ParamField>
-
-<ParamField path="on_fraction" type="float" default="0.5">
-  Probability of the `on` arm, in `[0, 1]`. Also passed to the report's SRM check as the expected split.
-</ParamField>
-
-The remaining keyword arguments mirror [`middleware()`](#middleware) (`run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `metadata`). Experiment tags are stamped last, so a caller's `metadata` cannot override the arm.
-
-### Returns
-
-<ResponseField name="ReasonBlocksMiddleware" type="middleware">
-  A run-scoped middleware, same type and lifecycle as [`middleware()`](#middleware). For the `off` arm it runs in passthrough mode — scoring and telemetry only, with the model request left untouched. The chosen arm is on `mw._run_metadata["arm"]`.
-</ResponseField>
+| Routing | Behavior |
+| --- | --- |
+| **Cheaper model (primary)** | Task-specific model trained on your workflow handles the request first |
+| **Frontier fallback** | When coverage runs out or the step fails, the gateway routes to your frontier model |
+| **Edge-case loop** | Fallback episodes are captured and feed the next training cycle |
 
 ---
 
-## `claude_messages_session()`
+## Self-hosted gateway (advanced)
 
-Builds a [`SteeringSession`](/api-reference/steering-session) wired for the Anthropic Messages API loop. Pair with [`run_messages_agent_loop(..., session=session)`](/api-reference/integrations/claude-tools#run_messages_agent_loop) to run the full pipeline at every turn.
+If you run `rbtrace proxy` on your own infrastructure instead of the hosted gateway, agent
+integration is the same env var pattern with your host URL. Operator endpoints, Docker, and
+local distillation CLI are documented under
+[Deployment — Advanced: self-hosting](/deployment#advanced-self-hosting-the-gateway).
 
-```python
-from anthropic import Anthropic
-from reasonblocks import ReasonBlocks
-from reasonblocks.integrations.claude_tools import (
-    make_claude_tools, run_messages_agent_loop,
-)
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /__rbtrace/stats` | Queue depth, exchange counts, health |
+| `POST /__rbtrace/flush` | Flush batched writes before DB backup |
 
-rb = ReasonBlocks(api_key="rb_live_...")
-client = Anthropic()
-tool_specs, dispatch = make_claude_tools(memory)
-
-with rb.claude_messages_session(
-    agent_name="reviewer", task="review PR #42",
-    model="claude-haiku-4-5-20251001",
-) as session:
-    outcome = run_messages_agent_loop(
-        client,
-        model="claude-haiku-4-5-20251001",
-        messages=[{"role": "user", "content": "..."}],
-        tool_specs=tool_specs, dispatch=dispatch,
-        session=session,
-    )
-```
-
-Same parameters as `middleware()` (`run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `metadata`). `framework` defaults to `"claude-messages"`.
-
-### Returns
-
-<ResponseField name="SteeringSession">
-  A `SteeringSession` instance — the framework-agnostic core. See the [SteeringSession reference](/api-reference/steering-session) for its full API. Sync + async context manager; emits `run_start` on enter, `run_finish` on exit (with the same outcome semantics as `middleware()`).
-</ResponseField>
-
----
-
-## `openai_model()`
-
-Wraps an `openai-agents` `Model` so the steering pipeline runs before each `get_response` call. This is the parity path with `middleware()` for the OpenAI Agents SDK — FSM scoring, server-side monitor evaluation, E1 / E2 / E3 injection, and (with a `model_factory`) model routing all run.
-
-```python
-from agents import Agent, Runner, OpenAIChatCompletionsModel
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(api_key="rb_live_...", model_routing={
-    "FAST": "gpt-4o-mini",
-    "SLOW": "gpt-4o",
-})
-
-wrapped = rb.openai_model(
-    default_model=OpenAIChatCompletionsModel("gpt-4o"),
-    model_factory=lambda mid: OpenAIChatCompletionsModel(mid),
-    agent_name="reviewer",
-    task="describe what this run is doing",
-)
-
-agent = Agent(name="reviewer", instructions="...", model=wrapped, tools=[...])
-
-with wrapped:
-    await Runner.run(agent, input="...")
-```
-
-<ParamField path="default_model" type="Model" required>
-  Any object satisfying the `openai-agents` `Model` protocol — typically `OpenAIChatCompletionsModel` or `OpenAIResponsesModel`.
-</ParamField>
-
-<ParamField path="model_factory" type="Callable[[str], Model]" default="None">
-  Optional callable that builds alternate `Model` instances on demand when `model_routing` on the client maps the current FSM state to a different identifier. Without a factory, routing overrides log on the step entry but the wrapped default model is still used.
-</ParamField>
-
-The remaining keyword arguments mirror `middleware()` (`run_id`, `agent_name`, `task`, `framework`, `model`, `codebase_id`, `org_id`, `project_id`, `metadata`). `framework` defaults to `"openai-agents"`.
-
-### Returns
-
-<ResponseField name="ReasonBlocksModel">
-  A Model-compatible wrapper that is also a sync + async context manager. Use as the `model` field on an `Agent`. The underlying `SteeringSession` is exposed via `wrapped.session` for inspecting `step_log` / calling `mark_failure`.
-</ResponseField>
-
-<Note>
-  Streaming via `stream_response` is currently a pass-through to the wrapped model. Non-streaming `get_response` calls run the full pipeline.
-</Note>
-
----
-
-## `claude_agent_telemetry()`
-
-Builds a telemetry-only adapter for the `claude-agent-sdk` `query()` stream. The Claude Agent SDK runs the agent loop inside the Claude Code CLI process, so the steering pipeline cannot inject — this adapter parses the message stream for `tool_use` / `tool_result` blocks and emits `run_start` / per-tool `step` / `run_finish` events to the dashboard.
-
-```python
-from claude_agent_sdk import query
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(api_key="rb_live_...")
-
-async with rb.claude_agent_telemetry(
-    agent_name="reviewer", task="...", model="claude-haiku-4-5-20251001",
-) as tele:
-    async for msg in tele.wrap(query(prompt="...", options={"tools": tools})):
-        ...
-```
-
-Parameters mirror `middleware()`. `framework` defaults to `"claude-agent-sdk"`.
-
-### Returns
-
-<ResponseField name="ClaudeAgentTelemetry">
-  Sync + async context manager exposing `wrap(async_iter)` to drive an async query stream, plus `mark_failure(reason=...)` / `close(timeout=...)`. No FSM, no monitor evaluation, no E-trace retrieval — purely an observer.
-</ResponseField>
-
----
-
-## `openai_hooks()`
-
-Builds a `RunHooks` adapter for the `openai-agents` SDK. Telemetry-only — emits the same `run_start` / `step` / `run_finish` events as the steering integrations, but does **not** run scoring, monitors, or injection. Use this when you want dashboard rows but don't want a `Model` wrapper sitting in front of model calls; use [`openai_model()`](#openai_model) for the full pipeline.
-
-<Note>
-  If you adopt `openai_model`, you don't also need `openai_hooks` — the wrapper emits the same telemetry from inside the steering pipeline.
-</Note>
-
-<CodeGroup>
-
-```python Sync
-from agents import Agent, Runner
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(api_key="rb_live_...")
-
-hooks = rb.openai_hooks(
-    run_id="run-oai-1",
-    agent_name="reviewer",
-    task="Review PR #42",
-)
-
-agent = Agent(name="reviewer", instructions="...", tools=[...])
-
-with hooks:
-    result = Runner.run_sync(agent, input="Review this PR", hooks=hooks)
-```
-
-```python Async
-import asyncio
-from agents import Agent, Runner
-from reasonblocks import ReasonBlocks
-
-rb = ReasonBlocks(api_key="rb_live_...")
-
-async def main():
-    async with rb.openai_hooks(agent_name="coder", task="Fix bug") as hooks:
-        agent = Agent(name="coder", instructions="...", tools=[...])
-        result = await Runner.run(agent, input="Fix the bug", hooks=hooks)
-```
-
-</CodeGroup>
-
-<Note>
-  `openai_hooks()` accepts the same keyword parameters as `middleware()`. The only behavioral difference is that `framework` defaults to `"openai-agents"` instead of `"langchain"`.
-</Note>
-
-### Returns
-
-<ResponseField name="RunHooks" type="hooks">
-  A `RunHooks`-compatible object that is also a sync + async context manager. Exposes `mark_failure(reason=...)` and `close(timeout=...)` with the same semantics as the LangChain middleware. The hooks emit `run_start` on `on_agent_start`, a per-tool step event on `on_tool_end`, and `run_finish` on `on_agent_end` (or via `__exit__` when an exception escapes).
-</ResponseField>
-
----
-
-## `score_step()`
-
-`@staticmethod`. Heuristic difficulty scorer for a single step's text. The middleware uses this internally; you can call it directly for debugging or testing.
-
-```python
-score = ReasonBlocks.score_step(
-    "I'm not sure — this could be a ValidationError or a TypeError"
-)
-print(score)  # e.g. 0.73
-```
-
-<ParamField path="text" type="string" required>
-  The agent step text to score. An empty string returns `0.5`.
-</ParamField>
-
-<ResponseField name="score" type="float">
-  A value between 0 and 1. Higher scores mean the step looks harder — more hedging, longer text, more error language, more entities.
-</ResponseField>
-
-The score is a weighted combination of four signals, passed through a sigmoid centered at `raw=0.5`:
-
-| Signal | Weight | Description |
-|--------|--------|-------------|
-| Hedging density | 0.30 | Frequency of uncertainty words such as `"maybe"`, `"not sure"`, `"hmm"`, `"reconsider"` |
-| Length | 0.25 | Word count, capped at 500 |
-| Error language | 0.25 | Frequency of words like `"error"`, `"exception"`, `"traceback"`, `"failed"` |
-| Entity density | 0.20 | Count of file paths, dotted identifiers, and quoted strings (capped at 10) |
-
-The raw weighted sum is mapped via `1 / (1 + exp(-6 * (raw - 0.5)))` to keep the output in a usable range.
+Self-hosted relegation serving after local distill uses `RBTRACE_DISTILL_DIR`; see
+[Quickstart — Advanced](/quickstart#advanced-run-the-pipeline-locally) and trace-reconstructor
+operator docs for gateway routing config.
