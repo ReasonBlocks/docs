@@ -65,6 +65,20 @@ untrained base, with the repair-turn subset broken out), the promotion verdict, 
 the serving contract. If a model was promoted, it is live on your Fireworks account
 under `rb-<tenant>-slm-v2`.
 
+## 6. Serve through the same env var
+
+After promotion, keep `ANTHROPIC_BASE_URL` pointed at the proxy and flip serving:
+
+```bash
+export RBTRACE_DISTILL_DIR=./distill-acme
+export RBTRACE_SERVE_MODE=shadow   # teacher + student; always return teacher; log disagreement
+# when ready:
+export RBTRACE_SERVE_MODE=student  # only if report.json names a promoted_model
+```
+
+Restart the proxy. The agent still speaks Anthropic Messages; the proxy flattens
+with `render_flat` and the instruction from `report.json` / `mined.json`.
+
 <Warning>
 Serve the model **exactly as trained**: the transcript flattened into one role-tagged
 user turn with the training instruction appended (`rbtrace.distill.dataset.render_flat`).
