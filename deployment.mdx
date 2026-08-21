@@ -21,7 +21,7 @@ distillation pipeline, and relegation serving for your tenant.
 | --- | --- |
 | Gateway URL | Dashboard → Quickstart → copy into `ANTHROPIC_BASE_URL` |
 | Anthropic API key | Your agent environment (passthrough; never stored by ReasonBlocks) |
-| Integration tier | [Client integration](/client-integration): env var only (A), or optional `rbtrace` shim (B/C) |
+| Integration path | [Integrating your agent](/client-integration): gateway only (A), or optional `rbtrace` shim (B/C) |
 | Distillation | Dashboard → start job or schedule; opt-in, tenant-scoped |
 | Relegation serving | Dashboard → enable after training report; cheaper model first, frontier fallback |
 
@@ -44,11 +44,11 @@ See the [Quickstart](/quickstart) for the end-to-end hosted flow.
 
 ---
 
-## Client integration tiers
+## Integration paths
 
-How much code (if any) to add in the agent process is separate from where the gateway runs.
-See [Client integration](/client-integration) for Tier A (env var only), Tier B (`install()`),
-and Tier C (`install()` + `with rbtrace.client.run()` per job).
+Where the gateway runs is separate from how you label runs in your agent process.
+See [Integrating your agent](/client-integration) for Path A (gateway only), Path B (`install()`),
+and Path C (`install()` + `with rbtrace.client.run()` per job).
 
 ---
 

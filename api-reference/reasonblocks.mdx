@@ -8,7 +8,7 @@ This is the default integration surface for ReasonBlocks: route agent traffic th
 the same URL.
 
 For the step-by-step flow, start with [Quickstart](/quickstart). For tier selection (env
-var only vs client shim), see [Client integration](/client-integration).
+gateway only vs `rbtrace` shim), see [Integrating your agent](/client-integration).
 
 ## Gateway URL
 
@@ -57,7 +57,7 @@ persisted in capture storage.
 <ParamField path="RBTRACE_DISABLE" type="string" default="unset">
   Set to `1` to disable the client shim without removing code. Capture continues through the
   gateway; run grouping falls back to Tier A (passive inference). See
-  [Client integration — Kill switches](/client-integration#kill-switches).
+  [Integrating your agent — Kill switches](/client-integration#kill-switches).
 </ParamField>
 
 ---
@@ -91,7 +91,7 @@ for task in tasks:
         run_agent(task)
 ```
 
-Full tier decision tree: [Client integration](/client-integration).
+Full path decision tree: [Integrating your agent](/client-integration).
 
 ---
 

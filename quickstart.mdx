@@ -35,7 +35,7 @@ Your agent speaks the Anthropic Messages protocol to ReasonBlocks when using
 env vars. See [Endpoint compatibility](/endpoint-compatibility). The gateway is
 byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
 
-For proven run boundaries (recommended before distillation), see [Client integration](/client-integration).
+For proven run boundaries (recommended before distillation), see [Integrating your agent](/client-integration).
 **Tier B or C** adds a small client shim; the gateway stays hosted.
 
 ## 3. Confirm capture in the dashboard
@@ -108,7 +108,7 @@ shim in your agent environment:
 pip install rbtrace   # when published to PyPI
 ```
 
-Then follow [Client integration](/client-integration) for `rbtrace.client.install()` and
+Then follow [Integrating your agent](/client-integration) for `rbtrace.client.install()` and
 optional `with rbtrace.client.run():` per job. The gateway URL and capture path are unchanged.
 
 ## Advanced: run the pipeline locally
@@ -143,7 +143,7 @@ and spend ceiling. Defaults are in `distill.example.json` on the
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Client integration" icon="plug" href="/client-integration">
+  <Card title="Integrating your agent" icon="plug" href="/client-integration">
     Tier A, B, or C: how much agent-side code to add.
   </Card>
   <Card title="Deployment" icon="server" href="/deployment">

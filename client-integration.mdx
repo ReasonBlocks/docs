@@ -1,74 +1,90 @@
 ---
-title: "Client integration"
-description: "Choose how much client code to add, from env-var-only capture to proven run boundaries for distillation."
+title: "Integrating your agent"
+description: "Send LLM traffic through the hosted gateway, then add optional run labeling when you need distillation-ready traces."
 ---
 
-ReasonBlocks hosts the capture gateway. Tiers only affect **agent-side run labeling**, not
-where traffic is stored or how distillation runs.
+Every ReasonBlocks setup sends agent LLM traffic through a **hosted capture gateway**. That is
+the only requirement. An optional **`rbtrace` shim** labels run boundaries on outbound requests
+when you need high-yield traces for distillation — nothing changes inside your LLM SDK or agent
+framework.
 
-All integration starts with your hosted gateway URL from
-[app.reasonblocks.com](https://app.reasonblocks.com) Quickstart:
+This page walks through the gateway setup everyone uses, then three paths depending on how
+your agent runs and whether you need **golden** (minable) runs for training.
+
+## Point your agent at the gateway
+
+Copy your gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com) Quickstart:
 
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 ```
 
-With `ANTHROPIC_BASE_URL` pointed at your ReasonBlocks gateway, your agent speaks its native
-protocol directly to ReasonBlocks. This works with the Anthropic SDK, LangChain, CrewAI, or
-any client that respects `ANTHROPIC_BASE_URL`. Use your existing Anthropic API key; it passes
-through and is never stored.
+Your agent keeps using its normal stack — Anthropic SDK, LangChain, CrewAI, or any client that
+respects `ANTHROPIC_BASE_URL`. ReasonBlocks records each exchange and forwards to your upstream
+provider. Your API key passes through and is never stored.
 
-OpenAI, Gemini, and other providers work via the same gateway with the matching client base
-URL and upstream routing. See [Endpoint compatibility](/endpoint-compatibility).
+OpenAI, Gemini, and other providers use the same gateway with the matching base URL and upstream
+routing. See [Endpoint compatibility](/endpoint-compatibility).
 
-The optional client shim only affects how run boundaries are labeled on outbound LLM requests.
-It does not control whether traffic is captured.
+With only this env var, the gateway **captures all traffic** it sees. Run grouping is inferred
+from request patterns (prefix pairing, tool ids, thread starts). That is enough for audit logs,
+dashboard review, and many one-shot deployments.
 
-## Choose your tier
+## When to add run labeling
 
-| Tier | Client code | Best for |
-| --- | --- | --- |
-| **A: Gateway only** | 0 lines (env var only) | Capture, dashboard review, audit logs |
-| **B: Gateway + 2-line shim** | 2 lines once at startup | One logical job per process; minable traces when the whole process is one unit of work |
-| **C: Gateway + scoped shim** | 2 lines at startup + `with run()` per job | Batch workers, queue loops, thread pools |
+Distillation reads `rb_trace_v1` and prefers runs where `provenance.supports_universal_claims`
+is true — shown as **golden** in the [dashboard and Quickstart](/quickstart). Golden runs need
+**proven** boundaries: a complete step sequence per logical job, not inferred merges.
+
+Inference is conservative. Multi-agent crews, repeated similar prompts, and long-lived workers
+often produce runs marked **not minable** rather than guessed wrong. That is safe for capture,
+but low yield for automated training.
+
+The `rbtrace` shim adds two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LLM API calls via
+`httpx` (used by most official SDKs). Install it once at process startup; wrap each job in a
+context manager when one process handles many jobs.
 
 <Note>
-**Golden / minable runs:** downstream distillation reads `rb_trace_v1` and filters to runs
-where `provenance.supports_universal_claims` is true (shown as **golden** in the
-[dashboard and Quickstart](/quickstart)). Use **Tier B or C** when you need high minable
-yield. **Tier A** is enough if you only capture traffic and review runs in the dashboard, or
-you accept lower golden yield.
+**Gateway only** is fine if you only need capture and dashboard review, or you can accept lower
+golden yield. Add the shim (**Tier B or C** below) when distillation, RL, or compliance pipelines
+need reliable minable traces.
 </Note>
 
-## Quick decision guide
+## Pick a path
+
+| Path | What you add | Fits |
+| --- | --- | --- |
+| **A — Gateway only** | Env var | Capture, audit, dashboard review; one job per process is OK with inferred grouping |
+| **B — `install()` once** | Env var + `rbtrace.client.install()` at startup | One logical job per process, then exit or idle |
+| **C — `run()` per job** | Env var + `install()` + `with rbtrace.client.run():` per job | Queue workers, batch loops, thread pools |
+
+### Decision guide
 
 ```
-Do you need minable rb_trace_v1 for automated distillation?
+Do you need golden rb_trace_v1 for automated distillation?
 │
-├─ NO  → Tier A (gateway only)
+├─ NO  → Path A (gateway only)
 │
 └─ YES → Does one process handle exactly one logical job, then stop or idle?
          │
-         ├─ YES → Tier B (install() only)
+         ├─ YES → Path B (install() at startup)
          │
-         └─ NO  → Tier C (install() + with rbtrace.client.run() per job)
+         └─ NO  → Path C (install() + with rbtrace.client.run() per job)
 ```
 
 ---
 
-## Tier A: Gateway only (no client code)
+## Path A: Gateway only
 
-### Setup
+Nothing beyond the env var.
 
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 ```
 
-No application code changes beyond the base URL.
+### Choose this when
 
-### Use Tier A when
-
-- You want zero application code changes (security review, fastest rollout).
+- You want the fastest rollout with no new dependencies or app changes beyond the base URL.
 - You need a durable audit log of LLM API traffic in hosted storage.
 - You review capture and golden-run counts in the dashboard.
 - Each worker handles at most one logical job, then exits (one-shot container, Lambda, `python run.py` once per invocation).
@@ -77,63 +93,56 @@ No application code changes beyond the base URL.
 ### What you get
 
 - Full capture of every LLM request/response the gateway sees.
-- Run separation by passive inference (exact prefix pairing, tool ids, thread starts).
-- Safe but incomplete: unsound merges are avoided; many runs (especially multi-agent or repeated identical prompts) are marked **not minable** rather than guessed wrong.
+- Run separation by passive inference.
+- Safe but incomplete grouping: unsound merges are avoided; ambiguous shapes are marked **not minable** instead of guessed wrong.
 
-### What you do not get
+### What you give up
 
-- Proven run completeness (no 1..n sequence proof).
+- Proven run completeness (no 1..n sequence proof on the header path).
 - High minable yield when one process runs many similar jobs or complex multi-agent crews.
 
 ---
 
-## Tier B: Gateway + two-line shim
+## Path B: `install()` at startup
 
-### Setup
-
-Same env var as Tier A. Install the client package in your agent environment (when published):
+Same gateway env var. Add the shim once when the process starts:
 
 ```bash
-pip install rbtrace
+pip install rbtrace   # when published to PyPI
 ```
-
-At process startup (once):
 
 ```python
 import rbtrace.client
 rbtrace.client.install()
 ```
 
-No other changes. The shim stamps `X-RB-Run` and `X-RB-Seq` on outbound LLM API calls only
-(via `httpx`, which underlies most official SDKs).
+The shim stamps run headers on outbound LLM API calls only. No other changes to your agent code.
 
-### Use Tier B when
+### Choose this when
 
-- You need minable `rb_trace_v1` output for distillation, RL, or compliance pipelines.
+- You need minable `rb_trace_v1` for distillation, RL, or compliance pipelines.
 - The process runs **one logical job** from start to exit:
   - one CrewAI `kickoff()` then exit,
   - one API request → one agent invocation → done,
   - one long conversational session (single user thread).
 - You use async multi-agent frameworks (e.g. CrewAI manager + role agents) and want one trace for the whole crew. Sub-agents inherit the same run id automatically.
-- You can install `rbtrace` in the agent environment and pass a light code review (~150 lines, open source).
+- You can add `rbtrace` to the agent environment (~150 lines, open source).
 
-### Do not rely on Tier B alone when
+### Avoid Path B alone when
 
-- A single Python process loops over many unrelated tasks (`for task in tasks:`). Every task would share the first run id and traces merge. Use **Tier C**.
-- Workers use `threading.Thread` to run jobs in parallel. Each thread gets its own run id, not one per task. Use **Tier C** inside each thread (or one process per job).
+- A single Python process loops over many unrelated tasks (`for task in tasks:`). Every task would share the first run id and traces merge → use **Path C**.
+- Workers use `threading.Thread` for parallel jobs. Each thread gets its own run id, not one per task → use **Path C** inside each thread (or one process per job).
 
 ### What you get
 
 - Proven run boundaries and step order on the header path.
-- High minable yield on hard shapes (multi-agent, delegation) compared to Tier A.
+- High minable yield on hard shapes (multi-agent, delegation) compared to gateway-only capture.
 
 ---
 
-## Tier C: Gateway + scoped shim
+## Path C: `run()` per job
 
-### Setup
-
-Same env var and startup as Tier B, plus one context manager per logical job:
+Same gateway and startup as Path B, plus one context manager per logical job:
 
 ```python
 import rbtrace.client
@@ -144,7 +153,7 @@ for task in tasks:
         crew.kickoff(inputs=task)   # or agent.run(task), etc.
 ```
 
-For async code:
+Async:
 
 ```python
 async for task in tasks:
@@ -152,25 +161,25 @@ async for task in tasks:
         await agent.run(task)
 ```
 
-### Use Tier C when
+### Choose this when
 
 - One long-lived process handles many jobs (batch queue, worker pool, cron loop).
 - You need minable traces and each job must be a separate run with proven completeness.
 - You delegate work to OS threads and need one run id per task (wrap the thread body in `with rbtrace.client.run():`).
-- Tier B would merge distinct jobs into one trace, which is unacceptable for downstream mining.
+- Path B would merge distinct jobs into one trace, which breaks downstream mining.
 
 ### What you get
 
-- Everything in Tier B, with one fresh run id per `with` block.
+- Everything in Path B, with a fresh run id per `with` block.
 - Safe batch and worker-pool deployments without "super-run" merges.
 
-**Cost:** one extra line per job loop (or per thread entrypoint). Still no changes inside the LLM SDK or framework.
+One extra line per job loop (or per thread entrypoint). Still no changes inside the LLM SDK or framework.
 
 ---
 
 ## Common deployment patterns
 
-| Deployment pattern | Tier |
+| Deployment pattern | Path |
 | --- | --- |
 | Agent on your infra, gateway hosted by ReasonBlocks | A, B, or C |
 | Docker: one container invocation per user request | A or B |
@@ -185,13 +194,13 @@ async for task in tasks:
 | Goal | Action |
 | --- | --- |
 | Bypass capture | Unset `ANTHROPIC_BASE_URL` (agent talks to provider directly). |
-| Disable shim without removing code | `RBTRACE_DISABLE=1` (capture continues; grouping falls back to Tier A behavior). |
+| Disable shim without removing it | `RBTRACE_DISABLE=1` (capture continues; grouping falls back to Path A behavior). |
 
 ## What the shim does not do
 
-- It does not parse or log prompts in-process beyond adding two HTTP headers.
-- It does not replace the gateway. Traffic must still go through `ANTHROPIC_BASE_URL`.
-- It has no effect if `httpx` is not used for LLM calls (those requests fall back to Tier A grouping).
+- Parse or log prompts in-process beyond adding two HTTP headers.
+- Replace the gateway — traffic must still go through `ANTHROPIC_BASE_URL`.
+- Affect calls that do not use `httpx` for LLM traffic (those requests fall back to inferred grouping).
 
 ## Next steps
 
