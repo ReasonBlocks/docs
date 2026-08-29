@@ -4,7 +4,7 @@ description: "Copy your gateway URL from the dashboard, set one environment vari
 ---
 
 ReasonBlocks hosts the capture gateway, storage, trace reconstruction, distillation pipeline,
-and relegation serving. Your integration starts in the dashboard, not on a local server.
+and trained model serving. Your integration starts in the dashboard, not on a local server.
 
 ## 1. Get your gateway URL
 
@@ -35,8 +35,9 @@ Your agent speaks the Anthropic Messages protocol to ReasonBlocks when using
 env vars. See [Endpoint compatibility](/endpoint-compatibility). The gateway is
 byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
 
-For proven run boundaries (recommended before distillation), see [Integrating your agent](/client-integration).
-**Tier B or C** adds a small client shim; the gateway stays hosted.
+Add the two-line client shim so run boundaries are proven rather than inferred — see
+[Integrating your agent](/client-integration). Without it far fewer runs qualify for training.
+The gateway stays hosted either way.
 
 ## 3. Confirm capture in the dashboard
 
@@ -74,18 +75,18 @@ The report includes:
 
 - Training summary and model identifier
 - Serving contract (flat transcript format)
-- Whether relegation routing is ready to enable
+- Whether your trained model is ready to go live
 
-## 6. Enable relegation serving (same env var)
+## 6. Go live with your trained model (same env var)
 
-Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL. Enable serving in the dashboard
+Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL. Go live in the dashboard
 when the report says the model is ready.
 
-**How routing works:**
+**How serving works:**
 
-1. **Cheaper model first.** Most steps go to your task-specific model trained on this workflow.
-2. **Frontier fallback.** When the cheaper model lacks coverage or fails a step, ReasonBlocks
-   routes that request to your frontier model. Your agent still sees one API; the gateway
+1. **Your trained model.** Most steps hit the task-specific model trained on this workflow.
+2. **Frontier backup.** When your model lacks coverage or fails a step, ReasonBlocks
+   sends that request to your frontier model. Your agent still sees one API; the gateway
    handles the switch.
 3. **Continuous improvement.** Fallback episodes are captured as edge cases and feed the next
    training cycle so coverage expands over time.
@@ -99,17 +100,18 @@ turn with the training instruction appended (`render_flat`). A flat-trained mode
 multi-turn silently underperforms.
 </Warning>
 
-## Optional: client shim (Tier B / C)
+## 2b. Add the client shim
 
-If you need high **golden** yield (batch workers, multi-job processes), install the client
-shim in your agent environment:
+Run boundaries are what make a trace minable, and the shim is what states them. Install it in
+your agent environment:
 
 ```bash
 pip install rbtrace   # when published to PyPI
 ```
 
-Then follow [Integrating your agent](/client-integration) for `rbtrace.client.install()` and
-optional `with rbtrace.client.run():` per job. The gateway URL and capture path are unchanged.
+Then follow [Integrating your agent](/client-integration) for `rbtrace.client.install()`, plus
+`with rbtrace.client.run():` per job when one process handles many. The gateway URL and capture
+path are unchanged.
 
 ## Advanced: run the pipeline locally
 
@@ -128,12 +130,12 @@ python -m rbtrace distill /path/to/capture.duckdb --tenant acme --dry-run
 python -m rbtrace distill /path/to/capture.duckdb --tenant acme
 ```
 
-Self-hosted relegation serving after a local training run (implementation uses env vars from
+Self-hosted trained model serving after a local training run (implementation uses env vars from
 the distill output directory):
 
 ```bash
 export RBTRACE_DISTILL_DIR=./distill-acme
-# Enable relegation routing on the gateway host (see trace-reconstructor operator docs)
+# Go live with your trained model on the gateway host (see trace-reconstructor operator docs)
 ```
 
 Pass `--config distill.json` to override holdout fraction, example caps, base model, LoRA rank,
@@ -144,7 +146,7 @@ and spend ceiling. Defaults are in `distill.example.json` on the
 
 <CardGroup cols={2}>
   <Card title="Integrating your agent" icon="plug" href="/client-integration">
-    Tier A, B, or C: how much agent-side code to add.
+    The gateway env var plus the two-line shim.
   </Card>
   <Card title="Deployment" icon="server" href="/deployment">
     Hosted gateway and pipeline; self-hosting appendix.

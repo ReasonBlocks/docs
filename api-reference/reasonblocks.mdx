@@ -36,8 +36,8 @@ export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 
 <ParamField path="ANTHROPIC_BASE_URL" type="string" required>
   Hosted gateway URL from the dashboard. Must be set **before** the agent process starts.
-  After training, keep the same URL. Enable relegation serving in the dashboard (cheaper
-  model first, frontier-model fallback on edge cases).
+  After training, keep the same URL. Go live with your trained model in the dashboard (your
+  model primary; frontier backup on edge cases).
 </ParamField>
 
 ```bash
@@ -112,20 +112,20 @@ For OpenAI Chat Completions, Responses API, Gemini, and other paths, see
 
 ---
 
-## Training and relegation serving (hosted)
+## Training and trained model serving (hosted)
 
-Training and relegation routing run on ReasonBlocks infrastructure under your tenant. Start
+Training and serving your trained model run on ReasonBlocks infrastructure under your tenant. Start
 jobs and read reports in the dashboard; see [Quickstart](/quickstart) steps 4–6.
 
 After training, serving uses the same `ANTHROPIC_BASE_URL` with a **flat** transcript contract
 (`render_flat`). Multi-turn serving of a flat-trained model silently underperforms; see the
 Warning on [Quickstart](/quickstart).
 
-| Routing | Behavior |
+| Who answers | Behavior |
 | --- | --- |
-| **Cheaper model (primary)** | Task-specific model trained on your workflow handles the request first |
-| **Frontier fallback** | When coverage runs out or the step fails, the gateway routes to your frontier model |
-| **Edge-case loop** | Fallback episodes are captured and feed the next training cycle |
+| **Your trained model (primary)** | Task-specific model trained on your workflow handles the request |
+| **Frontier backup** | When coverage runs out or the step fails, the gateway uses your frontier model |
+| **Edge-case loop** | Backup episodes are captured and feed the next training cycle |
 
 ---
 
@@ -141,6 +141,6 @@ local distillation CLI are documented under
 | `GET /__rbtrace/stats` | Queue depth, exchange counts, health |
 | `POST /__rbtrace/flush` | Flush batched writes before DB backup |
 
-Self-hosted relegation serving after local distill uses `RBTRACE_DISTILL_DIR`; see
+Self-hosted trained model serving after local distill uses `RBTRACE_DISTILL_DIR`; see
 [Quickstart — Advanced](/quickstart#advanced-run-the-pipeline-locally) and trace-reconstructor
-operator docs for gateway routing config.
+operator docs for gateway serve config.

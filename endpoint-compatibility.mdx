@@ -9,12 +9,12 @@ query string. There is no fixed allowlist of routes.
 
 **Default product path:** Anthropic Messages (`POST /v1/messages`) via
 `ANTHROPIC_BASE_URL`. That path has the best trace reconstruction, supports training, and
-**relegation serving** (cheaper model first, frontier fallback). It matches how most agent
+**trained model serving** (your model primary, frontier backup). It matches how most agent
 frameworks call Claude today.
 
 Other common endpoints (OpenAI Chat Completions, Responses API, Gemini, etc.) work for
-**capture and passthrough** when upstream routing is set correctly. Relegation serving
-(cheaper model + frontier fallback) applies only to `POST /v1/messages`.
+**capture and passthrough** when upstream routing is set correctly. Trained model serving
+(your model + frontier backup) applies only to `POST /v1/messages`.
 
 ## Upstream routing (operator / hosted config)
 
@@ -69,7 +69,7 @@ export OPENAI_API_KEY="sk-..."   # passthrough; never stored
 ```
 
 Client calls `POST /v1/chat/completions` on the gateway; traffic forwards to OpenAI.
-Capture works; structured golden traces and relegation serving are **weaker or unavailable**
+Capture works; structured golden traces and trained model serving are **weaker or unavailable**
 on this path (see below).
 
 ### OpenAI Responses API
@@ -103,27 +103,27 @@ API keys pass through upstream and are **not stored** by ReasonBlocks.
 | Raw capture | Yes | Yes | Yes |
 | Structured reconstruction | Best | Partial | Sparse |
 | Golden runs for distillation | Yes (Tier B/C recommended) | Limited | Not recommended |
-| Relegation serving | Yes (cheaper model + frontier fallback) | No (upstream passthrough only) | No |
+| Trained model serving | Yes (your model + frontier backup) | No (upstream passthrough only) | No |
 
-Training and relegation serving use flat Anthropic-shaped transcripts. If your workflow
+Training and trained model serving use flat Anthropic-shaped transcripts. If your workflow
 must use the cheaper model path, run the agent on **`/v1/messages`** even if you also capture
 other provider traffic.
 
-## Relegation serving (Anthropic path only)
+## Trained model serving (Anthropic path only)
 
-After training, keep the same gateway URL. Relegation routing affects **only**
+After training, keep the same gateway URL. Your trained model is served on **only**
 `POST /v1/messages`:
 
-| Routing | Behavior |
+| Who answers | Behavior |
 | --- | --- |
-| **Cheaper model** | Trained task-specific model handles the step first |
-| **Frontier fallback** | Frontier model when the cheaper model lacks coverage or fails |
-| **Edge cases** | Fallback traffic is captured for the next training cycle |
+| **Your trained model** | Task-specific model trained on your workflow handles the step |
+| **Frontier backup** | Frontier model when your model lacks coverage or fails |
+| **Edge cases** | Backup traffic is captured for the next training cycle |
 
-OpenAI-shaped requests are not rewritten to the cheaper model. They passthrough to
+OpenAI-shaped requests are not rewritten to your trained model. They passthrough to
 `AGENTRECON_UPSTREAM_BASE`.
 
-Enable relegation in the dashboard (hosted) or via gateway config (self-hosted). See
+Go live in the dashboard (hosted) or via gateway config (self-hosted). See
 [Quickstart](/quickstart) steps 5–6.
 
 ## Client shim paths

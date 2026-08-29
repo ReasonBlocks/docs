@@ -1,15 +1,14 @@
 ---
 title: "Integrating your agent"
-description: "Send LLM traffic through the hosted gateway, then add optional run labeling when you need distillation-ready traces."
+description: "Send LLM traffic through the hosted gateway and add two lines of run labeling, so your traces are distillation-ready."
 ---
 
-Every ReasonBlocks setup sends agent LLM traffic through a **hosted capture gateway**. That is
-the only requirement. An optional **`rbtrace` shim** labels run boundaries on outbound requests
-when you need high-yield traces for distillation — nothing changes inside your LLM SDK or agent
-framework.
+Every ReasonBlocks setup sends agent LLM traffic through a **hosted capture gateway** and adds
+the two-line **`rbtrace` shim**, which labels run boundaries on outbound requests. Nothing
+changes inside your LLM SDK or agent framework.
 
-This page walks through the gateway setup everyone uses, then three paths depending on how
-your agent runs and whether you need **golden** (minable) runs for training.
+This page walks through the gateway setup everyone uses, then the two shim paths, depending on
+whether one process handles one job or many.
 
 ## Point your agent at the gateway
 
@@ -45,16 +44,17 @@ The `rbtrace` shim adds two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LL
 context manager when one process handles many jobs.
 
 <Note>
-**Gateway only** is fine if you only need capture and dashboard review, or you can accept lower
-golden yield. Add the shim (**Tier B or C** below) when distillation, RL, or compliance pipelines
-need reliable minable traces.
+**Gateway only** is fine for capture and dashboard review, and is the right way to start
+collecting on day one. It is not enough for training: with run labels 95% of runs are provably
+minable, without them about 7%. Both are equally trustworthy — nothing is ever marked minable
+when it is not — so what you lose is volume, not correctness.
 </Note>
 
 ## Pick a path
 
 | Path | What you add | Fits |
 | --- | --- | --- |
-| **A — Gateway only** | Env var | Capture, audit, dashboard review; one job per process is OK with inferred grouping |
+| **A — Gateway only** | Env var | Capture, audit, dashboard review; starting collection before a deploy window |
 | **B — `install()` once** | Env var + `rbtrace.client.install()` at startup | One logical job per process, then exit or idle |
 | **C — `run()` per job** | Env var + `install()` + `with rbtrace.client.run():` per job | Queue workers, batch loops, thread pools |
 

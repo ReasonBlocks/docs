@@ -6,13 +6,13 @@ description: "Hosted gateway and distillation pipeline (default), plus an append
 ## Hosted (default)
 
 ReasonBlocks operates the capture gateway, durable storage, trace reconstruction,
-distillation pipeline, and relegation serving for your tenant.
+distillation pipeline, and trained model serving for your tenant.
 
 **What ReasonBlocks runs**
 
 - Hosted gateway at a tenant-specific URL (copy from [app.reasonblocks.com](https://app.reasonblocks.com) Quickstart)
 - Capture storage and trace reconstruction
-- Distillation jobs, training reports, and relegation routing (cheaper model + frontier fallback)
+- Distillation jobs, training reports, and serving your trained model (frontier as backup)
 - Dashboard views for capture volume, golden-run counts, reports, and serving status
 
 **What you configure**
@@ -23,13 +23,13 @@ distillation pipeline, and relegation serving for your tenant.
 | Anthropic API key | Your agent environment (passthrough; never stored by ReasonBlocks) |
 | Integration path | [Integrating your agent](/client-integration): gateway only (A), or optional `rbtrace` shim (B/C) |
 | Distillation | Dashboard → start job or schedule; opt-in, tenant-scoped |
-| Relegation serving | Dashboard → enable after training report; cheaper model first, frontier fallback |
+| Trained model serving | Dashboard → go live after training report; your model primary, frontier backup |
 
 Your agent process only needs the gateway URL via `ANTHROPIC_BASE_URL`, your existing API key,
 and optionally the client shim. No DuckDB files, no local `rbtrace proxy`, and no SSH access
 required for the default path.
 
-Anthropic Messages is the primary path for training and relegation serving. OpenAI Chat
+Anthropic Messages is the primary path for training and serving your trained model. OpenAI Chat
 Completions, Responses API, Gemini, and other routes are supported for capture via the same
 gateway URL with the correct client env var. See [Endpoint compatibility](/endpoint-compatibility).
 
@@ -66,7 +66,7 @@ Three roles, usually split across processes on your ops hosts:
 2. **Storage:** append-only DuckDB file on a durable volume
 3. **Analysis:** read-only CLI (`python -m rbtrace inspect|trace|distill|loop`) on a schedule or on demand
 
-After local training completes, the same gateway can route with **relegation** using
+After local training completes, the same gateway can serve your trained model using
 operator config from the distill output. See [Quickstart — Advanced](/quickstart#advanced-run-the-pipeline-locally).
 
 ### Install
@@ -155,11 +155,11 @@ python -m rbtrace loop capture.duckdb --tenant acme --out distill-acme --once
 Filter to minable runs with `provenance.supports_universal_claims: true` (shown as **golden**
 in CLI summaries).
 
-Self-hosted relegation serving after training:
+Self-hosted trained model serving after training:
 
 ```bash
 export RBTRACE_DISTILL_DIR=./distill-acme
-# Enable relegation routing on the gateway host (see trace-reconstructor operator docs)
+# Go live with your trained model on the gateway host (see trace-reconstructor operator docs)
 ```
 
 ### Monitoring (self-hosted)

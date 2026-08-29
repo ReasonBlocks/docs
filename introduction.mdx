@@ -32,6 +32,10 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
     its native protocol directly to ReasonBlocks. Your Anthropic API key passes through
     untouched and is never stored. Every exchange is captured to hosted storage. The gateway
     is byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
+
+    Add the two-line client shim in the same step so each request carries its run id — that
+    is what makes a session provably complete later, and what most of your training data
+    depends on. See [Integrating your agent](/client-integration).
   </Step>
   <Step title="Traces reconstruct themselves">
     ReasonBlocks reconstructs raw traffic into verified runs on hosted storage: ordered steps,
@@ -49,11 +53,10 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
     The hosted pipeline mines (state → action) pairs from complete runs and fine-tunes a
     smaller model for your tenant on **your** workflow. Training is opt-in and tenant-scoped.
   </Step>
-  <Step title="Relegation routing goes live">
-    After training completes, the gateway routes traffic to your **cheaper model first**.
-    When the model lacks coverage or hits an edge case it cannot handle, ReasonBlocks
-    **falls back to your frontier model** (the one you already use). Fallback episodes
-    become training signal so the cheaper model improves on those edge cases over time. Same
+  <Step title="Your trained model goes live">
+    After training completes, the gateway serves your **trained model** through the same URL.
+    Your frontier model stays connected as backup when coverage runs out or an edge case
+    appears. Those episodes become training signal so your model improves over time. Same
     `ANTHROPIC_BASE_URL`; your agent code unchanged. Weights stay scoped to your tenant.
   </Step>
 </Steps>
@@ -77,7 +80,7 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
     Dashboard URL → env var → capture → distill → serve.
   </Card>
   <Card title="Integrating your agent" icon="plug" href="/client-integration">
-    Tier A, B, or C: how much agent-side code to add.
+    The gateway env var plus the two-line shim.
   </Card>
   <Card title="Endpoint compatibility" icon="network-wired" href="/endpoint-compatibility">
     Anthropic, OpenAI, Gemini, and other LLM API paths.
