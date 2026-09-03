@@ -3,14 +3,14 @@ title: "Integrating your agent"
 description: "Send LLM traffic through the hosted gateway and add two lines of run labeling, so your traces are distillation-ready."
 ---
 
-Every ReasonBlocks setup sends agent LLM traffic through a **hosted capture gateway** and adds
-the two-line **`rbtrace` shim**, which labels run boundaries on outbound requests. Nothing
-changes inside your LLM SDK or agent framework.
+Every ReasonBlocks setup has two required pieces: agent LLM traffic goes through a **hosted
+capture gateway**, and the two-line **`rbtrace` shim** labels run boundaries on outbound
+requests. Nothing changes inside your LLM SDK or agent framework.
 
-This page walks through the gateway setup everyone uses, then the two shim paths, depending on
-whether one process handles one job or many.
+This page walks through both steps, then the one decision you are left with: whether the shim
+is installed once per process, or scoped per job.
 
-## Point your agent at the gateway
+## Step 1 — Point your agent at the gateway
 
 Copy your gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com) Quickstart and
 add the prefix for your provider:
@@ -41,102 +41,53 @@ reaches AWS but has not been verified end to end — see
 Per-provider quickstarts, and what each path gets, are on
 [Endpoint compatibility](/endpoint-compatibility).
 
-With only this env var, the gateway **captures all traffic** it sees. Run grouping is inferred
-from request patterns (prefix pairing, tool ids, thread starts). That is enough for audit logs,
-dashboard review, and many one-shot deployments.
+With only this env var, the gateway **captures all traffic** it sees, and run grouping is
+inferred from request patterns (prefix pairing, tool ids, thread starts). That is enough for
+audit logs and dashboard review. It is not enough for training — which is why step 2 is part of
+the integration rather than an add-on.
 
-## When to add run labeling
+## Step 2 — Add the run-labeling shim
 
 Distillation reads `rb_trace_v1` and prefers runs where `provenance.supports_universal_claims`
 is true — shown as **golden** in the [dashboard and Quickstart](/quickstart). Golden runs need
 **proven** boundaries: a complete step sequence per logical job, not inferred merges.
 
-Inference is conservative. Multi-agent crews, repeated similar prompts, and long-lived workers
-often produce runs marked **not minable** rather than guessed wrong. That is safe for capture,
-but low yield for automated training.
-
-The `rbtrace` shim adds two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LLM API calls at
-the HTTP-transport level — `httpx` and `httpx2` (the Anthropic and OpenAI Python SDKs),
-`aiohttp` (google-genai's async client) and `botocore` (boto3, which sends through `urllib3`
-and so gets an event hook rather than a patched client). `install()` covers all four. Install
-it once at process startup; wrap each job in a context manager when one process handles many
-jobs.
-
-<Note>
-**Gateway only** is fine for capture and dashboard review, and is the right way to start
-collecting on day one. It is not enough for training: with run labels 95% of runs are provably
-minable, without them about 7%. Both are equally trustworthy — nothing is ever marked minable
-when it is not — so what you lose is volume, not correctness.
-</Note>
-
-## Pick a path
-
-| Path | What you add | Fits |
-| --- | --- | --- |
-| **A — Gateway only** | Env var | Capture, audit, dashboard review; starting collection before a deploy window |
-| **B — `install()` once** | Env var + `rbtrace.client.install()` at startup | One logical job per process, then exit or idle |
-| **C — `run()` per job** | Env var + `install()` + `with rbtrace.client.run():` per job | Queue workers, batch loops, thread pools |
-
-### Decision guide
-
-```
-Do you need golden rb_trace_v1 for automated distillation?
-│
-├─ NO  → Path A (gateway only)
-│
-└─ YES → Does one process handle exactly one logical job, then stop or idle?
-         │
-         ├─ YES → Path B (install() at startup)
-         │
-         └─ NO  → Path C (install() + with rbtrace.client.run() per job)
-```
-
----
-
-## Path A: Gateway only
-
-Nothing beyond the env var (or the equivalent base-URL setting for your provider).
-
-```bash
-export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com/anthropic"
-```
-
-### Choose this when
-
-- You want the fastest rollout with no new dependencies or app changes beyond the base URL.
-- You need a durable audit log of LLM API traffic in hosted storage.
-- You review capture and golden-run counts in the dashboard.
-- Each worker handles at most one logical job, then exits (one-shot container, Lambda, `python run.py` once per invocation).
-- You can accept inferred run boundaries and lower minable yield for automated distillation.
-- Your agent is written in TypeScript or another non-Python stack: the shim is Python-only, so this is the path those agents are on.
-
-### What you get
-
-- Full capture of every LLM request/response the gateway sees.
-- Run separation by passive inference.
-- Safe but incomplete grouping: unsound merges are avoided; ambiguous shapes are marked **not minable** instead of guessed wrong.
-
-### What you give up
-
-- Proven run completeness (no 1..n sequence proof on the header path).
-- High minable yield when one process runs many similar jobs or complex multi-agent crews.
-
----
-
-## Path B: `install()` at startup
-
-Same gateway env var. Add the shim once when the process starts:
+Inference alone is conservative. Multi-agent crews, repeated similar prompts, and long-lived
+workers often produce runs marked **not minable** rather than guessed wrong. That is safe for
+capture, but low yield for automated training: with run labels roughly **95%** of runs are
+provably minable, without them about **7%**. Both numbers are equally trustworthy — nothing is
+ever marked minable when it is not — so what inference costs you is volume, not correctness.
 
 ```bash
 pip install rbtrace   # when published to PyPI
 ```
 
 ```python
-import rbtrace.client
-rbtrace.client.install()
+import rbtrace.client as shim; shim.install()
 ```
 
-The shim stamps run headers on outbound LLM API calls only. No other changes to your agent code.
+Add those two lines at process startup, before your agent makes its first LLM call. The shim
+stamps two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LLM API calls and does nothing
+else — no other changes to your agent code.
+
+It works at the HTTP-transport level and patches four transports: `httpx` and `httpx2` (the
+Anthropic and OpenAI Python SDKs), `aiohttp` (google-genai's async client) and `botocore`
+(boto3, which sends through `urllib3` and so gets an event hook rather than a patched client).
+`install()` covers all four.
+
+Those four carry the Python SDKs for Anthropic, OpenAI, Gemini (google-genai), AWS Bedrock
+(boto3) and every OpenAI-compatible host (Fireworks, vLLM, DeepSeek, Groq, OpenRouter, ...),
+plus the frameworks built on them — LangChain, LangGraph, CrewAI, the OpenAI Agents SDK, the
+Claude Agent SDK and LiteLLM. If your client is one of those, the shim is part of the
+integration; there is no supported configuration in which you point at the gateway and skip it.
+The clients it genuinely cannot reach are listed in
+[Clients the shim cannot reach](#clients-the-shim-cannot-reach).
+
+<Note>
+Required is not the same as sufficient. Run labels prove where a run starts and ends; a golden
+run also needs the capture of every step in it to be complete, and it still has to survive the
+corroboration pass. The shim removes the boundary problem, not the other two.
+</Note>
 
 `install()` already covers boto3: it registers botocore's `before-send` hook for every session
 botocore builds from that point on. It cannot reach a boto3 session or client you constructed
@@ -157,31 +108,68 @@ exists. It is idempotent, so it is safe to call defensively.
 before it has produced a week of unminable runs. `install()` also warns by name when
 google-genai + `aiohttp`, or boto3, are installed but their transport was not patched.
 
-### Choose this when
+## The one remaining choice: run scope
 
-- You need minable `rb_trace_v1` for distillation, RL, or compliance pipelines.
+With the gateway and the shim in place, all that is left is whether one `install()` covers the
+process, or each job needs its own run boundary.
+
+| Scope | What you add | Fits |
+| --- | --- | --- |
+| **`install()` once** | Env var + `rbtrace.client.install()` at startup | One logical job per process, then exit or idle |
+| **`install()` + `run()` per job** | The above + `with rbtrace.client.run():` around each job | Queue workers, batch loops, thread pools |
+
+### Decision guide
+
+```
+Can the shim reach your client's transport?
+(httpx, httpx2, aiohttp, botocore — the Anthropic, OpenAI, google-genai and boto3
+ Python SDKs, every OpenAI-compatible host, and the frameworks built on them)
+│
+├─ NO  → See "Clients the shim cannot reach": capture still works, proven run
+│        boundaries do not. The fix is to switch SDK, not to accept the gap.
+│
+└─ YES → install() is required. Does one process handle exactly one logical job,
+         then stop or idle?
+         │
+         ├─ YES → install() at startup is enough
+         │
+         └─ NO  → install() + with rbtrace.client.run() per job
+```
+
+---
+
+## `install()` at startup
+
+The two lines from step 2, and nothing more:
+
+```python
+import rbtrace.client
+rbtrace.client.install()
+```
+
+### This is enough when
+
 - The process runs **one logical job** from start to exit:
   - one CrewAI `kickoff()` then exit,
   - one API request → one agent invocation → done,
   - one long conversational session (single user thread).
 - You use async multi-agent frameworks (e.g. CrewAI manager + role agents) and want one trace for the whole crew. Sub-agents inherit the same run id automatically.
-- You can add `rbtrace` to the agent environment (~150 lines, open source).
 
-### Avoid Path B alone when
+### Add `run()` per job when
 
-- A single Python process loops over many unrelated tasks (`for task in tasks:`). Every task would share the first run id and traces merge → use **Path C**.
-- Workers use `threading.Thread` for parallel jobs. Each thread gets its own run id, not one per task → use **Path C** inside each thread (or one process per job).
+- A single Python process loops over many unrelated tasks (`for task in tasks:`). Every task would share the first run id and traces merge.
+- Workers use `threading.Thread` for parallel jobs. Each thread gets its own run id, not one per task — so wrap the thread body in `run()` (or use one process per job).
 
 ### What you get
 
 - Proven run boundaries and step order on the header path.
-- High minable yield on hard shapes (multi-agent, delegation) compared to gateway-only capture.
+- High minable yield on hard shapes (multi-agent, delegation) compared to inferred grouping.
 
 ---
 
-## Path C: `run()` per job
+## `install()` + `run()` per job
 
-Same gateway and startup as Path B, plus one context manager per logical job:
+Same gateway and startup, plus one context manager per logical job:
 
 ```python
 import rbtrace.client
@@ -203,38 +191,67 @@ async for task in tasks:
 ### Choose this when
 
 - One long-lived process handles many jobs (batch queue, worker pool, cron loop).
-- You need minable traces and each job must be a separate run with proven completeness.
+- Each job must be a separate run with proven completeness.
 - You delegate work to OS threads and need one run id per task (wrap the thread body in `with rbtrace.client.run():`).
-- Path B would merge distinct jobs into one trace, which breaks downstream mining.
+- `install()` alone would merge distinct jobs into one trace, which breaks downstream mining.
 
 ### What you get
 
-- Everything in Path B, with a fresh run id per `with` block.
+- Everything `install()` gives you, with a fresh run id per `with` block.
 - Safe batch and worker-pool deployments without "super-run" merges.
 
 One extra line per job loop (or per thread entrypoint). Still no changes inside the LLM SDK or framework.
 
 ---
 
+## Clients the shim cannot reach
+
+For a few clients the shim is not something you decline — it is impossible. It patches Python
+HTTP transports, so there is nothing for it to patch when the client does not use one:
+
+- **fetch-based TypeScript/JavaScript SDKs** — `@anthropic-ai/sdk`, `openai`, `@google/genai` — and, for the same reason, Go, Java, Ruby, C#, PHP and curl.
+- **gRPC clients** — xAI's `xai-sdk`. gRPC does not traverse an HTTP proxy at all, and there is no `send` to wrap.
+- **WebSocket clients** — LM Studio's SDK. WebSocket frames are not request/response pairs, so a sequence number has no boundary to mark; the gateway is HTTP-only and does not proxy them either.
+- **sync SDKs built on `requests`** — Together AI's and Alibaba DashScope's sync paths. `requests` is not one of the four transports `install()` patches.
+
+Being honest about the cost: **capture works** — every exchange that reaches the gateway is
+recorded, and audit logs and dashboard review are unaffected. **Proven run boundaries do not.**
+Grouping falls back to inference, which puts roughly **7%** of runs in provably-minable
+territory instead of roughly **95%**. Training data largely does not accumulate on this path.
+
+This is the gateway-only state. It is what you are left with when the shim cannot reach your
+client, not a path to choose deliberately — and the remedy is to move the client onto a
+supported transport rather than to accept it. In practice that means the **OpenAI Python SDK**:
+xAI, Together AI, DashScope and effectively every other host in this list also serve an
+OpenAI-compatible `/chat/completions` surface, which the OpenAI SDK calls over `httpx2` and the
+shim stamps by suffix. A TypeScript agent has no in-language equivalent today; if minable
+traces matter for that workload, the model calls have to run from a Python process.
+
+---
+
 ## Common deployment patterns
 
-| Deployment pattern | Path |
+Gateway URL and `install()` are assumed everywhere below; the column says what else, if
+anything, the shape needs.
+
+| Deployment pattern | What it needs |
 | --- | --- |
-| Agent on your infra, gateway hosted by ReasonBlocks | A, B, or C |
-| Docker: one container invocation per user request | A or B |
-| Kubernetes Job: one task per pod | A or B |
-| Long-running worker draining a queue | C |
-| `for contract in contracts: crew.kickoff(...)` in one script | C |
-| CrewAI single `kickoff` in a fresh process | B |
-| Agent that talks to two providers (say Anthropic and Fireworks) | Same gateway, one prefix each; B or C as above |
-| Distillation consuming only `supports_universal_claims: true` | B or C |
+| Agent on your infra, gateway hosted by ReasonBlocks | Gateway URL + `install()`; add `run()` if one process handles many jobs |
+| Docker: one container invocation per user request | `install()` |
+| Kubernetes Job: one task per pod | `install()` |
+| Long-running worker draining a queue | `install()` + `run()` per job |
+| `for contract in contracts: crew.kickoff(...)` in one script | `install()` + `run()` per job |
+| CrewAI single `kickoff` in a fresh process | `install()` |
+| Agent that talks to two providers (say Anthropic and Fireworks) | Same gateway, one prefix each; `install()` covers both, plus `run()` as above |
+| Distillation consuming only `supports_universal_claims: true` | `install()`, plus `run()` per job in any multi-job process |
+| TypeScript, gRPC, WebSocket or `requests`-based client | The shim cannot reach it — see [Clients the shim cannot reach](#clients-the-shim-cannot-reach) |
 
 ## Kill switches
 
 | Goal | Action |
 | --- | --- |
 | Bypass capture | Unset the base-URL variable for your provider (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, ...) so the agent talks to the provider directly. |
-| Disable shim without removing it | `RBTRACE_DISABLE=1` (capture continues; grouping falls back to Path A behavior). |
+| Turn the shim off without removing it | `RBTRACE_DISABLE=1`. An escape hatch for an incident, not a mode to run in: capture continues, but for as long as it is set the agent degrades to gateway-only inferred grouping and its runs are largely not minable. |
 
 ## What the shim does not do
 
@@ -242,7 +259,8 @@ One extra line per job loop (or per thread entrypoint). Still no changes inside 
 - Replace the gateway — traffic must still go through the gateway base URL.
 - Label calls from TypeScript or other non-Python SDKs, or from a Python HTTP library it does
   not patch (`httpx`, `httpx2`, `aiohttp` and `botocore` are covered). Those requests are still
-  captured and fall back to inferred grouping.
+  captured and fall back to inferred grouping — see
+  [Clients the shim cannot reach](#clients-the-shim-cannot-reach).
 - Label non-step calls (token counting, batches, embeddings, model listing) — on purpose, so a
   run's sequence stays contiguous.
 

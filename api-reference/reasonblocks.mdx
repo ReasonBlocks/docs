@@ -1,14 +1,15 @@
 ---
 title: "Gateway integration reference"
-description: "Hosted capture gateway: environment variables, optional client shim, and protocol contract for agents using ReasonBlocks."
+description: "Hosted capture gateway: environment variables, the required client shim, and protocol contract for agents using ReasonBlocks."
 ---
 
 This is the default integration surface for ReasonBlocks: route agent traffic through your
 **hosted gateway**, capture workflow traces, and serve a cheaper task-specific model with frontier-model fallback through
 the same URL.
 
-For the step-by-step flow, start with [Quickstart](/quickstart). For tier selection (env
-gateway only vs `rbtrace` shim), see [Integrating your agent](/client-integration).
+For the step-by-step flow, start with [Quickstart](/quickstart). The gateway base URL and the
+two-line shim are both required; the only choice left is whether `install()` alone covers the
+process or each job needs `run()` — see [Integrating your agent](/client-integration).
 
 ## Gateway URL
 
@@ -23,7 +24,7 @@ export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 | --- | --- |
 | Protocol | Anthropic Messages (`POST /v1/messages`) is the primary path. OpenAI and other LLM APIs are supported for capture. See [Endpoint compatibility](/endpoint-compatibility). |
 | API key | Your existing `ANTHROPIC_API_KEY`; passes through upstream, **never stored** |
-| Agent code | Unchanged except `ANTHROPIC_BASE_URL` (Tier A) |
+| Agent code | Unchanged except `ANTHROPIC_BASE_URL` and the two-line shim |
 | Failure mode | Byte-transparent, fail-open: if capture breaks, traffic still flows |
 
 ---
@@ -52,19 +53,24 @@ persisted in capture storage.
 
 ### `RBTRACE_DISABLE`
 
-**Optional.** Used with Tier B/C client shim only.
+**Escape hatch**, not a supported mode.
 
 <ParamField path="RBTRACE_DISABLE" type="string" default="unset">
   Set to `1` to disable the client shim without removing code. Capture continues through the
-  gateway; run grouping falls back to Tier A (passive inference). See
+  gateway, but for as long as it is set the agent degrades to gateway-only passive inference and
+  its runs are largely not minable. See
   [Integrating your agent — Kill switches](/client-integration#kill-switches).
 </ParamField>
 
 ---
 
-## Client shim (Tier B / C)
+## Client shim (required)
 
-Install in the **agent** environment when you need proven run boundaries for distillation:
+Install in the **agent** environment alongside the gateway base URL. It is required for every
+client whose HTTP transport it can patch — `httpx`, `httpx2`, `aiohttp` and `botocore`, which
+between them carry the Anthropic, OpenAI, google-genai and boto3 Python SDKs and the frameworks
+built on them. Without it, run boundaries are inferred rather than proven and most runs never
+become minable:
 
 ```bash
 pip install rbtrace   # when published to PyPI
@@ -95,8 +101,9 @@ pip install rbtrace   # when published to PyPI
 </ParamField>
 
 <ParamField path="rbtrace.client.run()" type="context manager">
-  **Tier C only.** One fresh run id per `with` block. Use in batch loops, worker pools, and
-  threaded workers so distinct jobs do not merge into one trace.
+  One fresh run id per `with` block. Needed whenever one process handles more than one logical
+  job — batch loops, worker pools, threaded workers — so distinct jobs do not merge into one
+  trace. A single-job process needs `install()` only.
 </ParamField>
 
 ```python
@@ -109,7 +116,8 @@ for task in tasks:
         run_agent(task)
 ```
 
-Full path decision tree: [Integrating your agent](/client-integration).
+Full decision guide, and the clients the shim cannot reach:
+[Integrating your agent](/client-integration).
 
 ---
 
@@ -123,7 +131,8 @@ storage. ReasonBlocks reconstructs runs server-side and labels them:
 | **golden** | Proven complete run; eligible for distillation (`supports_universal_claims: true`) |
 | **not** | Incomplete or violated; excluded from mining |
 
-Review counts in the dashboard. Tier B/C increases **golden** yield for multi-job processes.
+Review counts in the dashboard. The shim is what makes **golden** the common case rather than
+the exception; scoping `run()` per job is what keeps it that way in multi-job processes.
 
 For OpenAI Chat Completions, Responses API, Gemini, and other paths, see
 [Endpoint compatibility](/endpoint-compatibility).

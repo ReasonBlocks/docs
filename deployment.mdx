@@ -21,13 +21,13 @@ distillation pipeline, and trained model serving for your tenant.
 | --- | --- |
 | Gateway URL | Dashboard → Quickstart → copy into `ANTHROPIC_BASE_URL` |
 | Anthropic API key | Your agent environment (passthrough; never stored by ReasonBlocks) |
-| Integration path | [Integrating your agent](/client-integration): gateway only (A), or optional `rbtrace` shim (B/C) |
+| Integration | [Integrating your agent](/client-integration): gateway base URL **and** the two-line `rbtrace` shim — both required |
 | Distillation | Dashboard → start job or schedule; opt-in, tenant-scoped |
 | Trained model serving | Dashboard → go live after training report; your model primary, frontier backup |
 
-Your agent process only needs the gateway URL via `ANTHROPIC_BASE_URL`, your existing API key,
-and optionally the client shim. No DuckDB files, no local `rbtrace proxy`, and no SSH access
-required for the default path.
+Your agent process needs the gateway URL via `ANTHROPIC_BASE_URL`, your existing API key, and
+the two-line client shim. No DuckDB files, no local `rbtrace proxy`, and no SSH access required
+for the default path.
 
 Anthropic Messages is the primary path for training and serving your trained model. OpenAI Chat
 Completions, Responses API, Gemini, and other routes are supported for capture via the same
@@ -39,16 +39,18 @@ See the [Quickstart](/quickstart) for the end-to-end hosted flow.
 
 - Anthropic API keys pass through the gateway to upstream and are **not stored** by ReasonBlocks.
 - Capture data and distillation artifacts stay in your tenant scope on ReasonBlocks infrastructure.
-- The optional agent shim (~150 lines) only stamps HTTP headers on LLM API paths; it does not
-  replace the hosted gateway.
+- The agent shim only stamps two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on recognised LLM API
+  paths; it reads no bodies, sends nothing of its own, and does not replace the hosted gateway.
 
 ---
 
-## Integration paths
+## Integration
 
-Where the gateway runs is separate from how you label runs in your agent process.
-See [Integrating your agent](/client-integration) for Path A (gateway only), Path B (`install()`),
-and Path C (`install()` + `with rbtrace.client.run()` per job).
+Where the gateway runs is separate from how you label runs in your agent process. Both pieces of
+the client integration are required: point the SDK's base URL at the gateway, and install the
+shim. See [Integrating your agent](/client-integration) for the one remaining choice —
+`install()` alone, or `install()` plus `with rbtrace.client.run():` per job — and for the clients
+whose transport the shim cannot reach.
 
 ---
 
@@ -185,4 +187,4 @@ the writer fell behind. Increase resources or raise `AGENTRECON_MAX_QUEUE`.
 | `*.duckdb` capture files | Ops infrastructure only |
 | Distillation artifacts | `distill-*/` directories on ops hosts |
 
-**Agent surface (hosted or self-hosted):** gateway URL + optional shim + your existing agent code.
+**Agent surface (hosted or self-hosted):** gateway URL + the two-line shim + your existing agent code.

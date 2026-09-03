@@ -58,7 +58,7 @@ import os
 os.environ["ANTHROPIC_BASE_URL"] = "https://gateway.<your-tenant>.reasonblocks.com/anthropic"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-..."   # passthrough; never stored
 
-import rbtrace.client as shim; shim.install()   # run labels (X-RB-Run / X-RB-Seq)
+import rbtrace.client as shim; shim.install()   # required: run labels (X-RB-Run / X-RB-Seq)
 
 from anthropic import Anthropic
 
@@ -288,7 +288,7 @@ exercised: we had no Azure deployment, and the Z.ai key we hold returns 401. */}
 
 ## What you get per provider
 
-| Provider / path | Capture | Structured trace | Golden runs (with the shim) | Trained model serving |
+| Provider / path | Capture | Structured trace | Golden runs (require the shim) | Trained model serving |
 | --- | --- | --- | --- | --- |
 | Anthropic `POST /v1/messages` | Yes | Best | Yes — proven | **Yes** (your model + frontier backup) |
 | OpenAI Chat Completions | Yes | Yes — text, tool calls, tool results, usage | Yes — proven | No (passthrough) |
@@ -316,18 +316,23 @@ other provider traffic.
 
 ## Framework compatibility
 
-| Client | Configuration | Run labels from the shim |
+| Client | Configuration | Run labels — the shim, required wherever it reaches |
 | --- | --- | --- |
-| Anthropic SDK (Python) | `ANTHROPIC_BASE_URL` → `.../anthropic` | Yes |
-| Anthropic SDK (TypeScript) | `ANTHROPIC_BASE_URL` → `.../anthropic` | No — capture and inferred grouping only |
-| LangChain, CrewAI | Inherit `ANTHROPIC_BASE_URL` | Yes |
-| OpenAI SDK (Python), OpenAI Agents SDK | `OPENAI_BASE_URL` → `.../openai/v1` | Yes |
-| OpenAI SDK (TypeScript) | `OPENAI_BASE_URL` → `.../openai/v1` | No — capture and inferred grouping only |
-| google-genai (Python) | `HttpOptions(base_url=".../gemini")` | Yes (async client via aiohttp) |
-| boto3 / botocore | `endpoint_url=".../bedrock/<region>"` + bearer token | Yes, with `install_botocore()` — not verified against live Bedrock {/* PROOF:pending */} |
-| `AnthropicBedrock` | `ANTHROPIC_BEDROCK_BASE_URL` + bearer token | Yes (httpx2, the transport proven for the Anthropic SDK); the Bedrock round trip is unverified {/* PROOF:pending */} |
-| LiteLLM / httpx-based stacks | Base URL override to the right prefix | Yes on httpx paths |
-| Custom HTTP, curl, other languages | Any method/path the catch-all accepts | No — capture and inferred grouping only |
+| Anthropic SDK (Python) | `ANTHROPIC_BASE_URL` → `.../anthropic` | Required — `install()` (httpx2) |
+| Anthropic SDK (TypeScript) | `ANTHROPIC_BASE_URL` → `.../anthropic` | Impossible — fetch; capture and inferred grouping only |
+| LangChain, CrewAI | Inherit `ANTHROPIC_BASE_URL` | Required — `install()` (they wrap the Python SDK) |
+| OpenAI SDK (Python), OpenAI Agents SDK | `OPENAI_BASE_URL` → `.../openai/v1` | Required — `install()` (httpx2) |
+| OpenAI SDK (TypeScript) | `OPENAI_BASE_URL` → `.../openai/v1` | Impossible — fetch; capture and inferred grouping only |
+| google-genai (Python) | `HttpOptions(base_url=".../gemini")` | Required — `install()` (httpx; the async client via aiohttp) |
+| boto3 / botocore | `endpoint_url=".../bedrock/<region>"` + bearer token | Required — `install()`, plus `install_botocore()` for a client built before it; not verified against live Bedrock {/* PROOF:pending */} |
+| `AnthropicBedrock` | `ANTHROPIC_BEDROCK_BASE_URL` + bearer token | Required — `install()` (httpx2, the transport proven for the Anthropic SDK); the Bedrock round trip is unverified {/* PROOF:pending */} |
+| LiteLLM / httpx-based stacks | Base URL override to the right prefix | Required — `install()`, on the httpx, httpx2 and aiohttp paths |
+| Custom HTTP, curl, other languages | Any method/path the catch-all accepts | Impossible — no Python transport to patch; capture and inferred grouping only |
+
+Where that last column says **impossible**, capture still works and proven run boundaries do
+not. The fix is to move those calls onto an SDK the shim can reach — usually the OpenAI Python
+SDK — rather than to settle for inferred grouping; see
+[Clients the shim cannot reach](/client-integration#clients-the-shim-cannot-reach).
 
 API keys pass through upstream and are **not stored** by ReasonBlocks.
 
@@ -350,9 +355,10 @@ Go live in the dashboard (hosted) or via gateway config (self-hosted). See
 
 ## Client shim paths
 
-When using [Path B or C](/client-integration), `rbtrace.client.install()` stamps run headers
-on LLM calls to allowed hosts — the provider hosts, `*.reasonblocks.com`, and local or private
-addresses — whose path matches:
+The two-line shim is a required part of the integration for every client whose transport it can
+patch — see [Integrating your agent](/client-integration). `rbtrace.client.install()` stamps run
+headers on LLM calls to allowed hosts — the provider hosts, `*.reasonblocks.com`, and local or
+private addresses — whose path matches:
 
 - `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, `/v1/completions` (OpenAI legacy),
   `/v1/complete` (Anthropic legacy)
@@ -373,9 +379,13 @@ stamped — they are not steps. Transports covered: `httpx` and `httpx2` (the An
 OpenAI Python SDKs), `aiohttp` (google-genai's async client), and `botocore` (boto3) — all four
 are patched by `install()` itself; `install_botocore()` is only needed for a boto3 session or
 client you built *before* calling `install()`. `installed_transports()` reports which were
-actually patched. TypeScript and other non-Python SDKs are not stamped; they fall back to
-inferred grouping. `RBTRACE_HOSTS` extends the host list for agents that call a vendor
-directly; `RBTRACE_DISABLE=1` turns the shim off.
+actually patched. TypeScript and other non-Python SDKs cannot be stamped at all and fall back
+to inferred grouping — capture still works, proven run boundaries do not, and the remedy is to
+move those calls onto an SDK on a supported transport (see
+[Clients the shim cannot reach](/client-integration#clients-the-shim-cannot-reach)).
+`RBTRACE_HOSTS` extends the host list for agents that call a vendor directly;
+`RBTRACE_DISABLE=1` turns the shim off — an escape hatch that degrades grouping to inference
+for as long as it is set.
 
 Install: `pip install rbtrace` (when published to PyPI).
 
@@ -417,7 +427,7 @@ Self-hosted operators: see [Deployment](/deployment#advanced-self-hosting-the-ga
 
 <CardGroup cols={2}>
   <Card title="Integrating your agent" icon="plug" href="/client-integration">
-    Path A/B/C and the optional shim.
+    Gateway base URL, the required shim, and run scoping.
   </Card>
   <Card title="Gateway reference" icon="book" href="/api-reference/reasonblocks">
     Env vars and serve contract.
