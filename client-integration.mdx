@@ -12,18 +12,34 @@ whether one process handles one job or many.
 
 ## Point your agent at the gateway
 
-Copy your gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com) Quickstart:
+Copy your gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com) Quickstart and
+add the prefix for your provider:
 
 ```bash
-export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com/anthropic"
 ```
 
 Your agent keeps using its normal stack — Anthropic SDK, LangChain, CrewAI, or any client that
 respects `ANTHROPIC_BASE_URL`. ReasonBlocks records each exchange and forwards to your upstream
 provider. Your API key passes through and is never stored.
 
-OpenAI, Gemini, and other providers use the same gateway with the matching base URL and upstream
-routing. See [Endpoint compatibility](/endpoint-compatibility).
+One gateway URL serves every provider; only the prefix and the SDK's base-URL setting change:
+
+| Provider | Base URL to set |
+| --- | --- |
+| Anthropic | `ANTHROPIC_BASE_URL=.../anthropic` |
+| OpenAI (Chat Completions, Responses, Agents SDK) | `OPENAI_BASE_URL=.../openai/v1` |
+| Gemini (google-genai) | `HttpOptions(base_url=".../gemini")` or `GOOGLE_GEMINI_BASE_URL=.../gemini` |
+| AWS Bedrock (boto3, `AnthropicBedrock`) | `endpoint_url=".../bedrock/<region>"` / `ANTHROPIC_BEDROCK_BASE_URL=.../bedrock/<region>` |
+| Fireworks and other OpenAI-compatible hosts | `OPENAI_BASE_URL=.../fireworks/inference/v1` |
+
+Anthropic, OpenAI, Gemini and Fireworks are verified live through this setup. The Bedrock route
+reaches AWS but has not been verified end to end — see
+[Endpoint compatibility](/endpoint-compatibility#aws-bedrock-bedrock-region).
+{/* PROOF:pending — Bedrock. */}
+
+Per-provider quickstarts, and what each path gets, are on
+[Endpoint compatibility](/endpoint-compatibility).
 
 With only this env var, the gateway **captures all traffic** it sees. Run grouping is inferred
 from request patterns (prefix pairing, tool ids, thread starts). That is enough for audit logs,
@@ -39,9 +55,12 @@ Inference is conservative. Multi-agent crews, repeated similar prompts, and long
 often produce runs marked **not minable** rather than guessed wrong. That is safe for capture,
 but low yield for automated training.
 
-The `rbtrace` shim adds two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LLM API calls via
-`httpx` (used by most official SDKs). Install it once at process startup; wrap each job in a
-context manager when one process handles many jobs.
+The `rbtrace` shim adds two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LLM API calls at
+the HTTP-transport level — `httpx` and `httpx2` (the Anthropic and OpenAI Python SDKs),
+`aiohttp` (google-genai's async client) and `botocore` (boto3, which sends through `urllib3`
+and so gets an event hook rather than a patched client). `install()` covers all four. Install
+it once at process startup; wrap each job in a context manager when one process handles many
+jobs.
 
 <Note>
 **Gateway only** is fine for capture and dashboard review, and is the right way to start
@@ -76,10 +95,10 @@ Do you need golden rb_trace_v1 for automated distillation?
 
 ## Path A: Gateway only
 
-Nothing beyond the env var.
+Nothing beyond the env var (or the equivalent base-URL setting for your provider).
 
 ```bash
-export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
+export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com/anthropic"
 ```
 
 ### Choose this when
@@ -89,6 +108,7 @@ export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 - You review capture and golden-run counts in the dashboard.
 - Each worker handles at most one logical job, then exits (one-shot container, Lambda, `python run.py` once per invocation).
 - You can accept inferred run boundaries and lower minable yield for automated distillation.
+- Your agent is written in TypeScript or another non-Python stack: the shim is Python-only, so this is the path those agents are on.
 
 ### What you get
 
@@ -117,6 +137,25 @@ rbtrace.client.install()
 ```
 
 The shim stamps run headers on outbound LLM API calls only. No other changes to your agent code.
+
+`install()` already covers boto3: it registers botocore's `before-send` hook for every session
+botocore builds from that point on. It cannot reach a boto3 session or client you constructed
+**earlier** in the process — there is no global registry to reach — so if your Bedrock client
+is built before `install()` runs, add one line for it:
+
+```python
+import rbtrace.client
+rbtrace.client.install()
+rbtrace.client.install_botocore(bedrock_client)   # only for clients built before install()
+```
+
+Calling `install_botocore()` with no argument covers boto3's default session if one already
+exists. It is idempotent, so it is safe to call defensively.
+
+`rbtrace.client.installed_transports()` reports what was actually patched (`httpx`, `httpx2`,
+`aiohttp`, `botocore`); asserting it in a start-up check catches a silently unlabelled agent
+before it has produced a week of unminable runs. `install()` also warns by name when
+google-genai + `aiohttp`, or boto3, are installed but their transport was not patched.
 
 ### Choose this when
 
@@ -187,20 +226,25 @@ One extra line per job loop (or per thread entrypoint). Still no changes inside 
 | Long-running worker draining a queue | C |
 | `for contract in contracts: crew.kickoff(...)` in one script | C |
 | CrewAI single `kickoff` in a fresh process | B |
+| Agent that talks to two providers (say Anthropic and Fireworks) | Same gateway, one prefix each; B or C as above |
 | Distillation consuming only `supports_universal_claims: true` | B or C |
 
 ## Kill switches
 
 | Goal | Action |
 | --- | --- |
-| Bypass capture | Unset `ANTHROPIC_BASE_URL` (agent talks to provider directly). |
+| Bypass capture | Unset the base-URL variable for your provider (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, ...) so the agent talks to the provider directly. |
 | Disable shim without removing it | `RBTRACE_DISABLE=1` (capture continues; grouping falls back to Path A behavior). |
 
 ## What the shim does not do
 
 - Parse or log prompts in-process beyond adding two HTTP headers.
-- Replace the gateway — traffic must still go through `ANTHROPIC_BASE_URL`.
-- Affect calls that do not use `httpx` for LLM traffic (those requests fall back to inferred grouping).
+- Replace the gateway — traffic must still go through the gateway base URL.
+- Label calls from TypeScript or other non-Python SDKs, or from a Python HTTP library it does
+  not patch (`httpx`, `httpx2`, `aiohttp` and `botocore` are covered). Those requests are still
+  captured and fall back to inferred grouping.
+- Label non-step calls (token counting, batches, embeddings, model listing) — on purpose, so a
+  run's sequence stays contiguous.
 
 ## Next steps
 
@@ -212,6 +256,6 @@ One extra line per job loop (or per thread entrypoint). Still no changes inside 
     Hosted gateway and pipeline; self-hosting appendix.
   </Card>
   <Card title="Endpoint compatibility" icon="network-wired" href="/endpoint-compatibility">
-    Anthropic, OpenAI, Gemini, and other LLM paths.
+    Anthropic, OpenAI, Gemini, Bedrock, Fireworks and other LLM paths.
   </Card>
 </CardGroup>

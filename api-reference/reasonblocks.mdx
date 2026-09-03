@@ -72,8 +72,26 @@ pip install rbtrace   # when published to PyPI
 
 <ParamField path="rbtrace.client.install()" type="function">
   Call once at process startup. Stamps `X-RB-Run` and `X-RB-Seq` on outbound LLM HTTP
-  requests (via `httpx`). Does not replace the gateway; `ANTHROPIC_BASE_URL` must still point
-  at ReasonBlocks.
+  requests. Patches every transport it finds importable: `httpx` and `httpx2` (the Anthropic
+  and OpenAI Python SDKs), `aiohttp` (google-genai's async client) and `botocore` (boto3 —
+  which sends through `urllib3`, so it gets botocore's `before-send` event hook instead of a
+  patched client; the hook fires after SigV4 signing, so the headers stay outside the
+  signature). Returns `False` if it patched nothing, and warns by name when google-genai +
+  `aiohttp` or boto3 are installed but unpatched. Does not replace the gateway;
+  `ANTHROPIC_BASE_URL` must still point at ReasonBlocks.
+</ParamField>
+
+<ParamField path="rbtrace.client.install_botocore(session=None)" type="function">
+  Only needed for a boto3 client or session built **before** `install()` ran — `install()`
+  registers botocore's hook for every session built after it, and cannot reach one that
+  already exists. Accepts a boto3 client, a boto3 `Session`, a botocore `Session`, an event
+  emitter, or nothing for boto3's default session if one has been created. Returns whether it
+  registered; repeat calls are no-ops.
+</ParamField>
+
+<ParamField path="rbtrace.client.installed_transports()" type="function">
+  The transports actually patched, as a tuple. Worth asserting at start-up: an unpatched
+  transport looks exactly like a working one until the runs turn out not to be minable.
 </ParamField>
 
 <ParamField path="rbtrace.client.run()" type="context manager">
@@ -136,10 +154,54 @@ integration is the same env var pattern with your host URL. Operator endpoints, 
 local distillation CLI are documented under
 [Deployment — Advanced: self-hosting](/deployment#advanced-self-hosting-the-gateway).
 
+### Upstream routing
+
+One gateway serves every provider. Which upstream a request goes to is decided by the leading
+path segments — the **provider prefix** — which the gateway then strips before forwarding.
+
+<ParamField path="AGENTRECON_UPSTREAM_BASE" type="string" default="https://api.anthropic.com">
+  The **no-prefix** upstream: where a request goes when its path matches no prefix. The
+  client's path is appended verbatim. This is the original single-upstream behaviour and is
+  unchanged — a deployment that sets nothing else sees no difference. `AGENTRECON_PROVIDER`
+  (default `anthropic`) is the provider label written on those rows.
+</ParamField>
+
+<ParamField path="AGENTRECON_UPSTREAMS" type="JSON object" default="built-in table">
+  A JSON object mapping prefix to upstream base URL, merged **over** the built-in defaults
+  (`/anthropic`, `/openai`, `/gemini`, `/bedrock/<region>`, `/fireworks`). A prefix already in
+  the defaults is overridden; a prefix mapped to `null` is removed. Prefixed rows take their
+  provider label from the route, not from `AGENTRECON_PROVIDER`.
+
+  A prefix segment written as `<name>` is a wildcard whose value is substituted into the
+  upstream — that is how one `/bedrock/<region>` route serves every AWS region. Matching is
+  whole-segment and longest-prefix-first, so `/openaifoo` is not `/openai`.
+
+  A malformed value raises at startup with the variable named, rather than silently routing a
+  tenant's traffic — and its API key — to the wrong host.
+</ParamField>
+
+```bash
+# add an internal vLLM host, and take /openai off this gateway entirely
+export AGENTRECON_UPSTREAMS='{"/vllm": "http://vllm.internal:8000", "/openai": null}'
+```
+
+Removing a prefix matters when the no-prefix upstream is itself a Bedrock runtime, whose own
+`/anthropic/v1/messages` and `/openai/v1/*` routes would otherwise be claimed by the
+`/anthropic` and `/openai` prefixes.
+
+`python -m rbtrace.proxy --upstream <url>` sets the no-prefix upstream only; it does not touch
+the prefix table.
+
+### Operator endpoints
+
+Served at the gateway **root** only — under a provider prefix they are ordinary client paths
+and get forwarded upstream.
+
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /__rbtrace/stats` | Queue depth, exchange counts, health |
 | `POST /__rbtrace/flush` | Flush batched writes before DB backup |
+| `GET /__rbtrace/routes` | The effective prefix → upstream table, defaults merged with `AGENTRECON_UPSTREAMS` |
 
 Self-hosted trained model serving after local distill uses `RBTRACE_DISTILL_DIR`; see
 [Quickstart — Advanced](/quickstart#advanced-run-the-pipeline-locally) and trace-reconstructor
