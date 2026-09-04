@@ -13,7 +13,8 @@ prefix forwards.
 `ANTHROPIC_BASE_URL` pointed at the `/anthropic` prefix. It matches how most agent frameworks
 call Claude today, and it is the reference format: the reconstruction's own vocabulary is
 Anthropic's, so this path is read with no translation step and therefore carries no translation
-risk. It is also the path **trained model serving** uses.
+risk. **Trained model serving** uses this same wire shape wherever it shows up — the
+direct Anthropic API and Bedrock's own routes for an Anthropic model both qualify.
 
 OpenAI, Gemini, AWS Bedrock, Fireworks and other OpenAI-compatible hosts use the **same
 gateway URL** with their own prefix. They get capture, structured traces and golden-run mining.
@@ -96,11 +97,9 @@ Auth is `x-api-key` or `Authorization: Bearer`; neither is bound to the host, so
 invisible to authentication. Prompt caching is content-addressed on Anthropic's side and is
 unaffected by the gateway — the gateway relays bodies byte for byte.
 
-This path is proven end to end, in both the prefix and the legacy routing mode: every exchange
-captured with usage and stop reason, streamed rows with per-event timing, run labels on every
-row, and the run reconstructs as complete. It is also proven *unchanged* by this release —
-2,882 of 2,882 stored Anthropic exchanges re-parse identically, and run reconstruction over 78
-stored slices produced no change in grouping, membership or verdict.
+Verified end to end, in both the prefix and the legacy routing mode: every exchange captured
+with usage and stop reason, streamed rows with per-event timing, run labels on every row, and
+the run reconstructs as complete.
 
 ## OpenAI (`/openai`)
 
@@ -140,15 +139,15 @@ HTTP-only. If you use `client.responses.connect()`, set
 not captured), or stay on HTTP.
 </Note>
 
-Proven live, in both routing modes: capture, streaming, usage and run labels on every Chat
+Verified live, in both routing modes: capture, streaming, usage and run labels on every Chat
 Completions and Responses row, including a tool-call round trip, and the run reconstructs as
 complete. Stop reasons arrive in one vocabulary — OpenAI's `stop` recorded as `end_turn`,
 `tool_calls` as `tool_use`, the Responses API's `completed` as `end_turn` — with the raw value
-kept alongside. Before this release, OpenAI runs could not be marked complete at all.
+kept alongside.
 
-One provider rule worth knowing: a streamed Chat Completions response carries usage only when
-you set `stream_options.include_usage`. Without it the usage columns are recorded empty rather
-than estimated.
+A streamed Chat Completions response carries usage only when you set
+`stream_options.include_usage`. Without it the usage columns are recorded empty rather than
+estimated.
 
 ## Gemini (`/gemini`)
 
@@ -179,17 +178,16 @@ Function declarations, `toolConfig`, thinking budget and response schema land on
   the shim covers that transport, verified by driving the real SDK.
 - **OpenAI-compatible surface** (`/v1beta/openai`): point the OpenAI SDK at
   `.../gemini/v1beta/openai`; it is parsed as Chat Completions. The same suffix rule was
-  proven live on Fireworks, though this specific surface was not called.
+  verified live on Fireworks, though this specific surface was not called.
 - **Vertex AI**: capture-only and **unverified** — the request shape is recognised but it has
   not been exercised end to end. Ask us before relying on it.
   - **Out of scope**: the Interactions API (captured raw only) and the Live API (WebSocket; not
   proxied).
 
-Proven live, in both routing modes: capture, usage, streaming and run labels on every
+Verified live, in both routing modes: capture, usage, streaming and run labels on every
 `generateContent` and `streamGenerateContent` row, including a function-call round trip, and
 the run reconstructs as complete. Gemini's `STOP` is recorded as `end_turn` — or `tool_use`
-when the turn carries a function call — with `STOP` kept alongside. As with OpenAI, Gemini runs
-could not be marked complete before this release.
+when the turn carries a function call — with `STOP` kept alongside.
 
 ## AWS Bedrock (`/bedrock/<region>`)
 
@@ -232,7 +230,7 @@ route (`.../bedrock/us-east-1/anthropic` with the standard `Anthropic` client an
 key) and the OpenAI-compatible route (`.../bedrock/us-east-1/openai/v1` with the OpenAI SDK)
 on the same host are handled exactly like Anthropic and OpenAI traffic.
 
-Proven live through the gateway, in both routing modes: Converse, ConverseStream and
+Verified live through the gateway, in both routing modes: Converse, ConverseStream and
 InvokeModel captured with the API's own usage and stop reasons, stop reasons normalised to the
 shared vocabulary, run labels on every row, and the run reconstructs as complete. Per-event
 stream timing rows are the one thing Bedrock streams do not yet produce; content, usage, stop
@@ -241,7 +239,7 @@ reason and run reconstruction are unaffected.
 <Note>
 **Authentication.** Bedrock **API keys / bearer tokens** (`AWS_BEARER_TOKEN_BEDROCK`) are not
 bound to the host, so the endpoint override above is all you need — this is the mode we
-document and the mode proven live. **SigV4** (AWS access keys) signs the `Host` header, and the
+document and the mode verified live. **SigV4** (AWS access keys) signs the `Host` header, and the
 gateway rewrites `Host` to reach Bedrock, so a SigV4 client must sign for the upstream host
 itself (boto3: a `before-sign` hook setting `Host` to `bedrock-runtime.<region>.amazonaws.com`;
 `AnthropicBedrock`: `default_headers`). That recipe comes from the AWS SDK source rather than a
@@ -271,14 +269,14 @@ client.chat.completions.create(
 ```
 
 Fireworks serves Chat Completions, Responses, legacy completions and embeddings under
-`/inference/v1`; all are handled as OpenAI traffic. Proven live: capture, streaming, usage,
+`/inference/v1`; all are handled as OpenAI traffic. Verified live: capture, streaming, usage,
 run labels, and a complete reconstructed run.
 
 Any other OpenAI-compatible host — vLLM, Zhipu/Z.ai, Mistral, Together, Azure OpenAI — is the
 same recipe: a prefix on your gateway, and `OPENAI_BASE_URL` set to that prefix plus the
 host's own version path (`/api/paas/v4` for Z.ai, `/openai/deployments/<name>` for Azure).
 Run labels follow the path ending, not the version prefix, so those hosts are labelled too —
-proven live on Fireworks's `/inference/v1/chat/completions`.
+verified live on Fireworks's `/inference/v1/chat/completions`.
 
 ## What you get per provider
 
@@ -288,7 +286,7 @@ proven live on Fireworks's `/inference/v1/chat/completions`.
 | OpenAI Chat Completions | Yes | Yes — text, tool calls, tool results, usage | Yes — proven | No (passthrough) |
 | OpenAI Responses | Yes | Yes, streaming included | Yes — proven | No (passthrough) |
 | Gemini `generateContent` / `streamGenerateContent` | Yes | Yes — text, thoughts, function calls and responses, usage | Yes — proven | No (passthrough) |
-| Bedrock Converse / InvokeModel and their streams | Yes | Yes — text, tool use and results, usage | Yes — proven (with `install_botocore()` for a pre-built client) | No (passthrough) |
+| Bedrock Converse / InvokeModel and their streams | Yes | Yes — text, tool use and results, usage | Yes — proven (with `install_botocore()` for a pre-built client) | **Yes** (your model + frontier backup) |
 | Bedrock `/anthropic` and `/openai/v1` routes | Yes | As Anthropic / OpenAI | Yes | No (passthrough) |
 | Fireworks and other OpenAI-compatible hosts | Yes | Yes — as OpenAI | Yes — proven on Fireworks | No (passthrough) |
 | Anything else under a prefix (`/v1/models`, embeddings, batches, ...) | Yes | Raw only | Never a step | No |
@@ -330,15 +328,16 @@ also capture other provider traffic.
 
 Where that last column says **impossible**, capture still works and proven run boundaries do
 not. The fix is to move those calls onto an SDK the shim can reach — usually the OpenAI Python
-SDK — rather than to settle for inferred grouping; see
-[Clients the shim cannot reach](/client-integration#clients-the-shim-cannot-reach).
+SDK — rather than to settle for inferred grouping.
 
 API keys pass through upstream and are **not stored** by ReasonBlocks.
 
-## Trained model serving (Anthropic path only)
+## Trained model serving
 
-You keep the same gateway URL; your trained model is served on **only**
-`POST /v1/messages`:
+You keep the same gateway URL. Your trained model is served wherever your agent already
+speaks Anthropic's Messages shape: the direct API (`POST /v1/messages`), and Bedrock's own
+routes for an Anthropic model (`InvokeModel`, `Converse`) since both carry that same shape
+with the model id moved into the URL instead of the body.
 
 | Who answers | Behavior |
 | --- | --- |
@@ -346,8 +345,9 @@ You keep the same gateway URL; your trained model is served on **only**
 | **Frontier backup** | Frontier model when your model lacks coverage or fails |
 | **Edge cases** | Backup traffic is captured for the next training cycle |
 
-OpenAI, Gemini and Bedrock requests are not rewritten to your trained model. They pass through
-to their provider.
+OpenAI and Gemini requests are not rewritten to your trained model — they pass through to
+their provider. Streaming Bedrock calls (`InvokeModelWithResponseStream`, `ConverseStream`)
+also pass through unchanged for now; only the non-streaming calls are served.
 
 See [Quickstart](/quickstart) for the end-to-end flow.
 
@@ -375,7 +375,7 @@ private addresses — whose path matches:
 
 That last rule is why there is no Azure-specific entry: every OpenAI-compatible surface moves
 the prefix and keeps the ending, so one suffix rule covers them all and does not go stale when
-a new vendor appears. It was proven live on Fireworks's `/inference/v1/chat/completions`.
+a new vendor appears. It was verified live on Fireworks's `/inference/v1/chat/completions`.
 
 Token counting, batches, embeddings, model listing and background polls are deliberately not
 stamped — they are not steps. Transports covered: `httpx` and `httpx2` (the Anthropic and
@@ -384,8 +384,7 @@ are patched by `install()` itself; `install_botocore()` is only needed for a bot
 client you built *before* calling `install()`. `installed_transports()` reports which were
 actually patched. TypeScript and other non-Python SDKs cannot be stamped at all and fall back
 to inferred grouping — capture still works, proven run boundaries do not, and the remedy is to
-move those calls onto an SDK on a supported transport (see
-[Clients the shim cannot reach](/client-integration#clients-the-shim-cannot-reach)).
+move those calls onto an SDK on a supported transport.
 `RBTRACE_HOSTS` extends the host list for agents that call a vendor directly;
 `RBTRACE_DISABLE=1` turns the shim off — an escape hatch that degrades grouping to inference
 for as long as it is set.
@@ -422,7 +421,7 @@ Not forwarded to upstream:
 - Bedrock event streams do not yet produce per-event timing rows. Everything else about them,
   including content, usage, stop reason and run reconstruction, is unaffected.
 
-Curious whether we support a provider not listed here? [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com).
+Curious whether we support a provider not listed here? [Reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com).
 
 ## Related
 

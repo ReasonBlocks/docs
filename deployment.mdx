@@ -30,7 +30,9 @@ Your agent process needs the gateway URL via `ANTHROPIC_BASE_URL`, your existing
 the two-line client shim. No DuckDB files, no locally run gateway, and no SSH access required
 for the default path.
 
-Anthropic Messages is the primary path for training and for trained model serving. OpenAI Chat
+Anthropic Messages is the primary path for training and for trained model serving — including
+when your agent reaches an Anthropic model through Bedrock's own routes, which carry the same
+shape. OpenAI Chat
 Completions, Responses API, Gemini, and other routes are supported for capture via the same
 gateway URL with the correct client env var. See [Endpoint compatibility](/endpoint-compatibility).
 
@@ -58,4 +60,4 @@ whose transport the shim cannot reach.
 ## On-prem and other deployment models
 
 Need the gateway run on your own infrastructure, on-prem model serving, or another deployment
-model? [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) and we will work out the right setup with you.
+model? [Reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) and we will work out the right setup with you.

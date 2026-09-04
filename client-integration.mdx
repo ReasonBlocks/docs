@@ -80,8 +80,6 @@ Those four carry the Python SDKs for Anthropic, OpenAI, Gemini (google-genai), A
 plus the frameworks built on them — LangChain, LangGraph, CrewAI, the OpenAI Agents SDK, the
 Claude Agent SDK and LiteLLM. If your client is one of those, the shim is part of the
 integration; there is no supported configuration in which you point at the gateway and skip it.
-The clients it genuinely cannot reach are listed in
-[Clients the shim cannot reach](#clients-the-shim-cannot-reach).
 
 <Note>
 Required is not the same as sufficient. Run labels prove where a run starts and ends; a golden
@@ -125,8 +123,8 @@ Can the shim reach your client's transport?
 (httpx, httpx2, aiohttp, botocore — the Anthropic, OpenAI, google-genai and boto3
  Python SDKs, every OpenAI-compatible host, and the frameworks built on them)
 │
-├─ NO  → See "Clients the shim cannot reach": capture still works, proven run
-│        boundaries do not. The fix is to switch SDK, not to accept the gap.
+├─ NO  → Capture still works; proven run boundaries do not. Move the client onto a
+│        supported SDK rather than accept the gap.
 │
 └─ YES → install() is required. Does one process handle exactly one logical job,
          then stop or idle?
@@ -202,33 +200,6 @@ async for task in tasks:
 
 One extra line per job loop (or per thread entrypoint). Still no changes inside the LLM SDK or framework.
 
----
-
-## Clients the shim cannot reach
-
-For a few clients the shim is not something you decline — it is impossible. It patches Python
-HTTP transports, so there is nothing for it to patch when the client does not use one:
-
-- **fetch-based TypeScript/JavaScript SDKs** — `@anthropic-ai/sdk`, `openai`, `@google/genai` — and, for the same reason, Go, Java, Ruby, C#, PHP and curl.
-- **gRPC clients** — xAI's `xai-sdk`. gRPC does not traverse an HTTP proxy at all, and there is no `send` to wrap.
-- **WebSocket clients** — LM Studio's SDK. WebSocket frames are not request/response pairs, so a sequence number has no boundary to mark; the gateway is HTTP-only and does not proxy them either.
-- **sync SDKs built on `requests`** — Together AI's and Alibaba DashScope's sync paths. `requests` is not one of the four transports `install()` patches.
-
-Being honest about the cost: **capture works** — every exchange that reaches the gateway is
-recorded, and audit logs are unaffected. **Proven run boundaries do not.**
-Grouping falls back to inference, which puts roughly **7%** of runs in provably-minable
-territory instead of roughly **95%**. Training data largely does not accumulate on this path.
-
-This is the gateway-only state. It is what you are left with when the shim cannot reach your
-client, not a path to choose deliberately — and the remedy is to move the client onto a
-supported transport rather than to accept it. In practice that means the **OpenAI Python SDK**:
-xAI, Together AI, DashScope and effectively every other host in this list also serve an
-OpenAI-compatible `/chat/completions` surface, which the OpenAI SDK calls over `httpx2` and the
-shim stamps by suffix. A TypeScript agent has no in-language equivalent today; if minable
-traces matter for that workload, the model calls have to run from a Python process.
-
----
-
 ## Common deployment patterns
 
 Gateway URL and `install()` are assumed everywhere below; the column says what else, if
@@ -244,7 +215,6 @@ anything, the shape needs.
 | CrewAI single `kickoff` in a fresh process | `install()` |
 | Agent that talks to two providers (say Anthropic and Fireworks) | Same gateway, one prefix each; `install()` covers both, plus `run()` as above |
 | Distillation consuming only `supports_universal_claims: true` | `install()`, plus `run()` per job in any multi-job process |
-| TypeScript, gRPC, WebSocket or `requests`-based client | The shim cannot reach it — see [Clients the shim cannot reach](#clients-the-shim-cannot-reach) |
 
 ## Kill switches
 
@@ -259,8 +229,7 @@ anything, the shape needs.
 - Replace the gateway — traffic must still go through the gateway base URL.
 - Label calls from TypeScript or other non-Python SDKs, or from a Python HTTP library it does
   not patch (`httpx`, `httpx2`, `aiohttp` and `botocore` are covered). Those requests are still
-  captured and fall back to inferred grouping — see
-  [Clients the shim cannot reach](#clients-the-shim-cannot-reach).
+  captured and fall back to inferred grouping.
 - Label non-step calls (token counting, batches, embeddings, model listing) — on purpose, so a
   run's sequence stays contiguous.
 
