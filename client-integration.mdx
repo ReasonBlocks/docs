@@ -43,13 +43,13 @@ Per-provider quickstarts, and what each path gets, are on
 
 With only this env var, the gateway **captures all traffic** it sees, and run grouping is
 inferred from request patterns (prefix pairing, tool ids, thread starts). That is enough for
-audit logs and dashboard review. It is not enough for training — which is why step 2 is part of
+audit logs. It is not enough for training — which is why step 2 is part of
 the integration rather than an add-on.
 
 ## Step 2 — Add the run-labeling shim
 
 Distillation reads `rb_trace_v1` and prefers runs where `provenance.supports_universal_claims`
-is true — shown as **golden** in the [dashboard and Quickstart](/quickstart). Golden runs need
+is true — shown as **golden** in the [Quickstart](/quickstart) flow. Golden runs need
 **proven** boundaries: a complete step sequence per logical job, not inferred merges.
 
 Inference alone is conservative. Multi-agent crews, repeated similar prompts, and long-lived
@@ -215,7 +215,7 @@ HTTP transports, so there is nothing for it to patch when the client does not us
 - **sync SDKs built on `requests`** — Together AI's and Alibaba DashScope's sync paths. `requests` is not one of the four transports `install()` patches.
 
 Being honest about the cost: **capture works** — every exchange that reaches the gateway is
-recorded, and audit logs and dashboard review are unaffected. **Proven run boundaries do not.**
+recorded, and audit logs are unaffected. **Proven run boundaries do not.**
 Grouping falls back to inference, which puts roughly **7%** of runs in provably-minable
 territory instead of roughly **95%**. Training data largely does not accumulate on this path.
 
@@ -271,7 +271,7 @@ anything, the shape needs.
     End-to-end: capture → distill → serve.
   </Card>
   <Card title="Deployment" icon="server" href="/deployment">
-    Hosted gateway and pipeline; self-hosting appendix.
+    Hosted gateway, capture storage, and the distillation pipeline.
   </Card>
   <Card title="Endpoint compatibility" icon="network-wired" href="/endpoint-compatibility">
     Anthropic, OpenAI, Gemini, Bedrock, Fireworks and other LLM paths.

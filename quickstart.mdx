@@ -1,10 +1,11 @@
 ---
 title: "Quickstart"
-description: "Copy your gateway URL from the dashboard, set one environment variable, and let ReasonBlocks capture, train a cheaper task-specific model, and serve it with frontier-model fallback."
+description: "Copy your gateway URL from the dashboard, set one environment variable, add the two-line shim, and let ReasonBlocks capture your traces and train a cheaper task-specific model."
 ---
 
-ReasonBlocks hosts the capture gateway, storage, trace reconstruction, distillation pipeline,
-and trained model serving. Your integration starts in the dashboard, not on a local server.
+ReasonBlocks hosts the capture gateway, storage, trace reconstruction, the distillation
+pipeline, and trained model serving. Your integration starts at
+[app.reasonblocks.com](https://app.reasonblocks.com), not on a local server.
 
 ## 1. Get your gateway URL
 
@@ -16,8 +17,7 @@ Copy your tenant gateway URL. It looks like:
 export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 ```
 
-Use the exact URL shown in the dashboard. Do not substitute `localhost` unless you are
-[self-hosting the gateway](/deployment#advanced-self-hosting-the-gateway).
+Use the exact URL shown for your tenant. Do not substitute `localhost`.
 
 ## 2. Set the environment variable and run your agent
 
@@ -27,7 +27,7 @@ you always have. ReasonBlocks passes it through to upstream and **never stores i
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 export ANTHROPIC_API_KEY="sk-ant-..."   # your existing key; unchanged
-python your_agent.py                     # no other code changes required
+python your_agent.py                     # nothing inside your SDK or framework changes
 ```
 
 Your agent speaks the Anthropic Messages protocol to ReasonBlocks when using
@@ -35,43 +35,33 @@ Your agent speaks the Anthropic Messages protocol to ReasonBlocks when using
 env vars. See [Endpoint compatibility](/endpoint-compatibility). The gateway is
 byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
 
-Add the two-line client shim so run boundaries are proven rather than inferred — see
-[Integrating your agent](/client-integration). Without it far fewer runs qualify for training.
-The gateway stays hosted either way.
+This step is half the integration. The other half is the two-line client shim in step 3, which
+labels run boundaries. Both are required: without the shim the gateway still captures traffic,
+but run boundaries are inferred rather than proven and far fewer runs qualify for training.
 
-## 3. Confirm capture in the dashboard
+## 3. Add the client shim
 
-After a few agent runs, open the dashboard **Captures** view (or the Quickstart progress panel).
+Run boundaries are what make a trace minable, and the shim is what states them. Install it in
+your agent environment:
 
-You should see:
+```bash
+pip install rbtrace   # when published to PyPI
+```
 
-- Exchange count growing as your agent runs
-- Runs labeled **golden** (eligible for training) or **not** (incomplete or violated, excluded from mining)
+Then follow [Integrating your agent](/client-integration) for `rbtrace.client.install()`, plus
+`with rbtrace.client.run():` per job when one process handles many. The gateway URL and capture
+path are unchanged.
 
-You do not need local DuckDB files or `rbtrace inspect` for the default path. ReasonBlocks
-reconstructs traces on hosted storage automatically.
+## 4. Training
 
-## 4. Start training (hosted, opt-in)
+Training is **opt-in** and **tenant-scoped**. Once there are enough **golden** runs for this
+workflow, ReasonBlocks mines policies from them and fine-tunes a **cheaper task-specific
+model** on your workflow. Training runs on ReasonBlocks infrastructure under your tenant,
+within a spend ceiling.
 
-Training is **opt-in** and **tenant-scoped**. ReasonBlocks does not train on your traffic
-until you start a job from the dashboard (or an approved automation hook).
+## 5. The training report
 
-In the dashboard:
-
-1. Open **Distillation** (or **Train** on Quickstart).
-2. Confirm you have enough **golden** runs for this workflow. If not, the UI shows "not ready"
-   and you can keep capturing until the threshold is met.
-3. Start a run. ReasonBlocks mines policies from your golden traces and fine-tunes a **cheaper
-   task-specific model** on your workflow.
-
-Training runs on ReasonBlocks infrastructure under your tenant. You configure spend limits and
-schedules in the dashboard, not by SSHing into a capture host.
-
-## 5. Read the training report
-
-When a job finishes, open the **Report** in the dashboard.
-
-The report includes:
+Each finished job produces a report covering:
 
 - Training summary and model identifier
 - Serving contract (flat transcript format)
@@ -79,8 +69,8 @@ The report includes:
 
 ## 6. Go live with your trained model (same env var)
 
-Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL. Go live in the dashboard
-when the report says the model is ready.
+Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL — nothing in your agent changes
+when your trained model starts answering.
 
 **How serving works:**
 
@@ -100,48 +90,6 @@ turn with the training instruction appended (`render_flat`). A flat-trained mode
 multi-turn silently underperforms.
 </Warning>
 
-## 2b. Add the client shim
-
-Run boundaries are what make a trace minable, and the shim is what states them. Install it in
-your agent environment:
-
-```bash
-pip install rbtrace   # when published to PyPI
-```
-
-Then follow [Integrating your agent](/client-integration) for `rbtrace.client.install()`, plus
-`with rbtrace.client.run():` per job when one process handles many. The gateway URL and capture
-path are unchanged.
-
-## Advanced: run the pipeline locally
-
-Use this only when you operate the gateway and storage yourself. See
-[Deployment](/deployment#advanced-self-hosting-the-gateway).
-
-```bash
-pip install rbtrace   # when published; or install from a release artifact
-
-python -m rbtrace inspect /path/to/capture.duckdb
-python -m rbtrace trace /path/to/capture.duckdb --format rb_trace_v1 -o traces.jsonl
-
-export FIREWORKS_API_KEY=fw_...
-export FIREWORKS_ACCOUNT_ID=accounts/your-account
-python -m rbtrace distill /path/to/capture.duckdb --tenant acme --dry-run
-python -m rbtrace distill /path/to/capture.duckdb --tenant acme
-```
-
-Self-hosted trained model serving after a local training run (implementation uses env vars from
-the distill output directory):
-
-```bash
-export RBTRACE_DISTILL_DIR=./distill-acme
-# Go live with your trained model on the gateway host (see trace-reconstructor operator docs)
-```
-
-Pass `--config distill.json` to override holdout fraction, example caps, base model, LoRA rank,
-and spend ceiling. Defaults are in `distill.example.json` on the
-[`trace-reconstructor`](https://github.com/ReasonBlocks/trace-reconstructor) repo.
-
 ## Next steps
 
 <CardGroup cols={2}>
@@ -149,6 +97,6 @@ and spend ceiling. Defaults are in `distill.example.json` on the
     The gateway env var plus the two-line shim.
   </Card>
   <Card title="Deployment" icon="server" href="/deployment">
-    Hosted gateway and pipeline; self-hosting appendix.
+    Hosted gateway, capture storage, and the distillation pipeline.
   </Card>
 </CardGroup>

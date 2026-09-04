@@ -4,8 +4,8 @@ description: "Hosted capture gateway: environment variables, the required client
 ---
 
 This is the default integration surface for ReasonBlocks: route agent traffic through your
-**hosted gateway**, capture workflow traces, and serve a cheaper task-specific model with frontier-model fallback through
-the same URL.
+**hosted gateway**, capture workflow traces, and serve a cheaper task-specific model with
+frontier-model fallback through the same URL.
 
 For the step-by-step flow, start with [Quickstart](/quickstart). The gateway base URL and the
 two-line shim are both required; the only choice left is whether `install()` alone covers the
@@ -37,8 +37,7 @@ export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 
 <ParamField path="ANTHROPIC_BASE_URL" type="string" required>
   Hosted gateway URL from the dashboard. Must be set **before** the agent process starts.
-  After training, keep the same URL. Go live with your trained model in the dashboard (your
-  model primary; frontier backup on edge cases).
+  The same URL is kept after training, when your trained model goes live.
 </ParamField>
 
 ```bash
@@ -131,7 +130,7 @@ storage. ReasonBlocks reconstructs runs server-side and labels them:
 | **golden** | Proven complete run; eligible for distillation (`supports_universal_claims: true`) |
 | **not** | Incomplete or violated; excluded from mining |
 
-Review counts in the dashboard. The shim is what makes **golden** the common case rather than
+The shim is what makes **golden** the common case rather than
 the exception; scoping `run()` per job is what keeps it that way in multi-job processes.
 
 For OpenAI Chat Completions, Responses API, Gemini, and other paths, see
@@ -141,8 +140,8 @@ For OpenAI Chat Completions, Responses API, Gemini, and other paths, see
 
 ## Training and trained model serving (hosted)
 
-Training and serving your trained model run on ReasonBlocks infrastructure under your tenant. Start
-jobs and read reports in the dashboard; see [Quickstart](/quickstart) steps 4–6.
+Training and serving your trained model run on ReasonBlocks infrastructure under your tenant.
+See [Quickstart](/quickstart) for the end-to-end flow.
 
 After training, serving uses the same `ANTHROPIC_BASE_URL` with a **flat** transcript contract
 (`render_flat`). Multi-turn serving of a flat-trained model silently underperforms; see the
@@ -156,62 +155,7 @@ Warning on [Quickstart](/quickstart).
 
 ---
 
-## Self-hosted gateway (advanced)
+## Other deployment models
 
-If you run `rbtrace proxy` on your own infrastructure instead of the hosted gateway, agent
-integration is the same env var pattern with your host URL. Operator endpoints, Docker, and
-local distillation CLI are documented under
-[Deployment — Advanced: self-hosting](/deployment#advanced-self-hosting-the-gateway).
-
-### Upstream routing
-
-One gateway serves every provider. Which upstream a request goes to is decided by the leading
-path segments — the **provider prefix** — which the gateway then strips before forwarding.
-
-<ParamField path="AGENTRECON_UPSTREAM_BASE" type="string" default="https://api.anthropic.com">
-  The **no-prefix** upstream: where a request goes when its path matches no prefix. The
-  client's path is appended verbatim. This is the original single-upstream behaviour and is
-  unchanged — a deployment that sets nothing else sees no difference. `AGENTRECON_PROVIDER`
-  (default `anthropic`) is the provider label written on those rows.
-</ParamField>
-
-<ParamField path="AGENTRECON_UPSTREAMS" type="JSON object" default="built-in table">
-  A JSON object mapping prefix to upstream base URL, merged **over** the built-in defaults
-  (`/anthropic`, `/openai`, `/gemini`, `/bedrock/<region>`, `/fireworks`). A prefix already in
-  the defaults is overridden; a prefix mapped to `null` is removed. Prefixed rows take their
-  provider label from the route, not from `AGENTRECON_PROVIDER`.
-
-  A prefix segment written as `<name>` is a wildcard whose value is substituted into the
-  upstream — that is how one `/bedrock/<region>` route serves every AWS region. Matching is
-  whole-segment and longest-prefix-first, so `/openaifoo` is not `/openai`.
-
-  A malformed value raises at startup with the variable named, rather than silently routing a
-  tenant's traffic — and its API key — to the wrong host.
-</ParamField>
-
-```bash
-# add an internal vLLM host, and take /openai off this gateway entirely
-export AGENTRECON_UPSTREAMS='{"/vllm": "http://vllm.internal:8000", "/openai": null}'
-```
-
-Removing a prefix matters when the no-prefix upstream is itself a Bedrock runtime, whose own
-`/anthropic/v1/messages` and `/openai/v1/*` routes would otherwise be claimed by the
-`/anthropic` and `/openai` prefixes.
-
-`python -m rbtrace.proxy --upstream <url>` sets the no-prefix upstream only; it does not touch
-the prefix table.
-
-### Operator endpoints
-
-Served at the gateway **root** only — under a provider prefix they are ordinary client paths
-and get forwarded upstream.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /__rbtrace/stats` | Queue depth, exchange counts, health |
-| `POST /__rbtrace/flush` | Flush batched writes before DB backup |
-| `GET /__rbtrace/routes` | The effective prefix → upstream table, defaults merged with `AGENTRECON_UPSTREAMS` |
-
-Self-hosted trained model serving after local distill uses `RBTRACE_DISTILL_DIR`; see
-[Quickstart — Advanced](/quickstart#advanced-run-the-pipeline-locally) and trace-reconstructor
-operator docs for gateway serve config.
+The hosted gateway is the supported path. For the gateway on your own infrastructure, on-prem
+serving, or another deployment model, [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com).

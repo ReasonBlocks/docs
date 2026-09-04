@@ -1,12 +1,12 @@
 ---
 title: "What is ReasonBlocks?"
-description: "Set one environment variable, capture your agent's workflow, and train a cheaper task-specific model with automatic fallback to your frontier model when coverage runs out."
+description: "Set one environment variable, capture your agent's workflow, and train a cheaper task-specific model on your own golden traces."
 ---
 
 ReasonBlocks captures how your production agent handles **its specific task**, then trains a
-**cheaper model** personalized to that workflow. This is not a generic small model or a shared
-checkpoint. Integration is one environment variable. ReasonBlocks hosts trace reconstruction,
-dataset mining, training, and serving on **your** golden traces.
+**cheaper model** personalized to that workflow. Integration is one environment variable.
+ReasonBlocks hosts trace reconstruction, dataset mining, and training on **your** golden
+traces.
 
 ## The problem
 
@@ -33,30 +33,37 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
     untouched and is never stored. Every exchange is captured to hosted storage. The gateway
     is byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
 
-    Add the two-line client shim in the same step so each request carries its run id — that
-    is what makes a session provably complete later, and what most of your training data
-    depends on. See [Integrating your agent](/client-integration).
+    OpenAI, Gemini, AWS Bedrock, and other OpenAI-compatible hosts work the same way through
+    the same gateway with their own prefix — see [Endpoint compatibility](/endpoint-compatibility)
+    for the full list and what each one gets you.
+
+    Add the client shim in the same step, before your agent's first LLM call:
+
+    ```python
+    import rbtrace.client as shim; shim.install()
+    ```
+
+    Two lines, and nothing else in your agent code changes. This is what makes a run
+    provably complete later, and what most of your training data depends on — see
+    [Integrating your agent](/client-integration).
   </Step>
   <Step title="Traces reconstruct themselves">
     ReasonBlocks reconstructs raw traffic into verified runs on hosted storage: ordered steps,
     tool calls paired to their results, and injected corrections identified structurally. Runs
     are labeled **golden** (proven complete, no violations) or **not**. Only golden runs from
-    your workflow are eligible for training. You can review status in the dashboard; no local
-    database required.
-  </Step>
-  <Step title="Policies are mined from golden traces">
-    Tool vocabulary, helper scripts, and flat (state → action) pairs are extracted from
-    **your** traffic, not configured by hand. When you have enough golden traces from this
-    task (or on a schedule you set in the dashboard), ReasonBlocks starts mining automatically.
+    your workflow are eligible for training, and none of it requires a local database.
   </Step>
   <Step title="A cheaper task-specific model is trained">
-    The hosted pipeline mines (state → action) pairs from complete runs and fine-tunes a
-    smaller model for your tenant on **your** workflow. Training is opt-in and tenant-scoped.
+    Once there are enough golden traces from this task, the hosted pipeline mines
+    (state → action) pairs from the complete runs and fine-tunes a smaller model for your
+    tenant on **your** workflow. Training is opt-in and tenant-scoped.
   </Step>
   <Step title="Your trained model goes live">
-    After training completes, the gateway serves your **trained model** through the same URL.
-    Your frontier model stays connected as backup when coverage runs out or an edge case
-    appears. Those episodes become training signal so your model improves over time. Same
+    The gateway serves your **trained model** through the same URL, with your frontier model
+    connected as backup. Which one answers is not a fixed confidence cutoff: a **classifier
+    trained on your tenant's own data** scores the run and escalates to the frontier model
+    before a consequential action when your model's answer should not be trusted. Escalated
+    episodes become training signal for the next cycle, so coverage widens over time. Same
     `ANTHROPIC_BASE_URL`; your agent code unchanged. Weights stay scoped to your tenant.
   </Step>
 </Steps>
@@ -72,12 +79,15 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
   Nothing selects on partial steps, which avoids low-quality training pairs.
 - **Spend ceilings everywhere.** Training jobs are cancelled the moment the provider's own
   cost estimate crosses your cap. GPU deployments tear down in `finally`.
+- **Escalation is a trained decision, not a guess.** Whether to trust your model's answer or
+  escalate to your frontier model is decided by a classifier trained on your tenant's own
+  agreement data — not a fixed confidence threshold.
 
 ## Get started
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Dashboard URL → env var → capture → distill → serve.
+    Gateway URL → env var → shim → capture → distill.
   </Card>
   <Card title="Integrating your agent" icon="plug" href="/client-integration">
     The gateway env var plus the two-line shim.
@@ -86,6 +96,6 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
     Anthropic, OpenAI, Gemini, and other LLM API paths.
   </Card>
   <Card title="Deployment" icon="server" href="/deployment">
-    Hosted gateway and pipeline (default); self-hosting appendix.
+    Hosted gateway, capture storage, and the distillation pipeline.
   </Card>
 </CardGroup>

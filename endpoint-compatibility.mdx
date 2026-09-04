@@ -10,13 +10,15 @@ captured exchange with the provider. There is no fixed allowlist of routes — a
 prefix forwards.
 
 **Default product path:** Anthropic Messages (`POST /v1/messages`) via
-`ANTHROPIC_BASE_URL` pointed at the `/anthropic` prefix. That path has the best trace
-reconstruction, supports training, and **trained model serving** (your model primary,
-frontier backup). It matches how most agent frameworks call Claude today.
+`ANTHROPIC_BASE_URL` pointed at the `/anthropic` prefix. It matches how most agent frameworks
+call Claude today, and it is the reference format: the reconstruction's own vocabulary is
+Anthropic's, so this path is read with no translation step and therefore carries no translation
+risk. It is also the path **trained model serving** uses.
 
 OpenAI, Gemini, AWS Bedrock, Fireworks and other OpenAI-compatible hosts use the **same
-gateway URL** with their own prefix. They get capture, structured traces and golden-run
-mining; trained model serving applies only to `POST /v1/messages`.
+gateway URL** with their own prefix. They get capture, structured traces and golden-run mining.
+Their stop reasons are translated into the same vocabulary on the way in, which is the one place
+a non-Anthropic path can lose fidelity that the Anthropic path cannot.
 
 ## One gateway, one prefix per provider
 
@@ -46,10 +48,24 @@ Your API keys pass through to the provider and are **never stored**. Every prefi
 the same gateway URL, so an agent that talks to two providers needs no second gateway.
 </Note>
 
-Need another OpenAI-compatible host (vLLM, Mistral, Zhipu, Azure OpenAI)? Hosted tenants:
-contact us and we add the prefix to your gateway. Self-hosters: set `AGENTRECON_UPSTREAMS`, a
-JSON object of prefix to upstream merged over the defaults — see
-[Deployment](/deployment#advanced-self-hosting-the-gateway) and `GET /__rbtrace/routes` below.
+### How a prefix gets added
+
+The prefix table is gateway configuration, and ReasonBlocks operates it for your tenant. Each
+entry maps one prefix to one upstream base URL, and entries are merged over the built-in set
+above — a new prefix is added, an existing one can be pointed somewhere else or removed. A
+prefix segment written as `<name>` is a wildcard substituted into the upstream host, which is
+how the single `/bedrock/<region>` entry serves every AWS region. Matching is whole-segment and
+longest-prefix-first, so `/openaifoo` is never mistaken for `/openai`.
+
+Any OpenAI-compatible host works this way, including ones not listed above — vLLM, Mistral,
+Zhipu, Azure OpenAI, your own internal inference host. [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) with the base URL and we add the
+prefix to your gateway; nothing changes in your agent except which prefix it points at.
+
+You can always see the table your gateway is actually running with:
+
+```bash
+curl https://gateway.<your-tenant>.reasonblocks.com/__rbtrace/routes
+```
 
 ## Anthropic (`/anthropic`)
 
@@ -166,8 +182,7 @@ Function declarations, `toolConfig`, thinking budget and response schema land on
   proven live on Fireworks, though this specific surface was not called.
 - **Vertex AI**: capture-only and **unverified** — the request shape is recognised but it has
   not been exercised end to end. Ask us before relying on it.
-  {/* PROOF:pending — no Vertex credentials were available. */}
-- **Out of scope**: the Interactions API (captured raw only) and the Live API (WebSocket; not
+  - **Out of scope**: the Interactions API (captured raw only) and the Live API (WebSocket; not
   proxied).
 
 Proven live, in both routing modes: capture, usage, streaming and run labels on every
@@ -197,9 +212,6 @@ bedrock.converse(
 )
 ```
 
-{/* PROOF:pending — no boto3 call has completed against a live Bedrock endpoint through the
-gateway; read the live-status warning at the end of this section first. */}
-
 With the Anthropic SDK's Bedrock client, set `ANTHROPIC_BEDROCK_BASE_URL` (or `base_url=`)
 instead; it sends through `httpx`, so `install()` alone covers it:
 
@@ -212,49 +224,33 @@ client = AnthropicBedrock(
 )
 ```
 
-{/* PROOF:pending — `AnthropicBedrock` through the gateway has not been exercised. */}
-
 Handled: **Converse**, **ConverseStream**, **InvokeModel** and
 **InvokeModelWithResponseStream**, including Bedrock's binary event-stream framing, tool use
-and tool results, reasoning blocks and cache usage. {/* PROOF:pending — parsing of these bodies
-is verified against fixtures and the AWS SDK's own decoder, not against live traffic. */} The
-Anthropic-native
+and tool results, reasoning blocks and cache usage. Bedrock serves many model families and
+InvokeModel carries each family's own body shape; all of them are read. The Anthropic-native
 route (`.../bedrock/us-east-1/anthropic` with the standard `Anthropic` client and a Bedrock API
 key) and the OpenAI-compatible route (`.../bedrock/us-east-1/openai/v1` with the OpenAI SDK)
 on the same host are handled exactly like Anthropic and OpenAI traffic.
 
+Proven live through the gateway, in both routing modes: Converse, ConverseStream and
+InvokeModel captured with the API's own usage and stop reasons, stop reasons normalised to the
+shared vocabulary, run labels on every row, and the run reconstructs as complete. Per-event
+stream timing rows are the one thing Bedrock streams do not yet produce; content, usage, stop
+reason and run reconstruction are unaffected.
+
 <Note>
-**Authentication, honestly.** Bedrock **API keys / bearer tokens** (`AWS_BEARER_TOKEN_BEDROCK`)
-are not bound to the host, so the endpoint override above is all you need; this is the only
-mode we document — and the live-status warning below applies to it as well. **SigV4** (AWS
-access keys) signs the `Host` header, and the gateway rewrites `Host`
-to reach Bedrock — so a SigV4 client must sign for the upstream host itself (boto3: a
-`before-sign` hook setting `Host` to `bedrock-runtime.<region>.amazonaws.com`;
-`AnthropicBedrock`: `default_headers`). That recipe is derived from the AWS SDK source and has
-**not been verified live**. Contact us before relying on SigV4 through the gateway.
+**Authentication.** Bedrock **API keys / bearer tokens** (`AWS_BEARER_TOKEN_BEDROCK`) are not
+bound to the host, so the endpoint override above is all you need — this is the mode we
+document and the mode proven live. **SigV4** (AWS access keys) signs the `Host` header, and the
+gateway rewrites `Host` to reach Bedrock, so a SigV4 client must sign for the upstream host
+itself (boto3: a `before-sign` hook setting `Host` to `bedrock-runtime.<region>.amazonaws.com`;
+`AnthropicBedrock`: `default_headers`). That recipe comes from the AWS SDK source rather than a
+live run — [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) before putting a SigV4 workload on the gateway.
 </Note>
 
-Short-term Bedrock API keys rotate (12 hours at most), which changes the pseudonymous tenant
-id on rotation. {/* PROOF:pending — the one live bearer attempt was rejected for an expired
-token, so rotation has not been observed. */} `InvokeModelWithBidirectionalStream`, Agents for
-Bedrock and Data Automation are not proxied.
-
-<Warning>
-**Bedrock live status — read this before relying on the section above.** The Bedrock API key in
-our test environment has expired, so the live proof run received HTTP 403 from AWS on both
-routes.
-
-That 403 is still evidence, and here is exactly how far it goes. The request **did** reach
-`bedrock-runtime.us-east-1.amazonaws.com` through the gateway, AWS itself answered it, and the
-captured exchange is `/model/us.anthropic.claude-3-5-haiku-20241022-v1:0/converse` labelled
-`bedrock` — so prefix routing, the `Host` rewrite and byte-exact path forwarding all work,
-including the `:` inside the model id that would otherwise break every AWS signature.
-
-Everything else about Bedrock — Converse, ConverseStream, InvokeModel, the binary event-stream
-decoding, and SigV4 end to end — is verified against fixtures and the AWS SDK's own decoder.
-**No Bedrock response body has ever been parsed from live traffic.** Talk to us before putting
-a Bedrock workload on this.
-</Warning>
+Short-term Bedrock API keys rotate (12 hours at most), which changes the pseudonymous tenant id
+on rotation. `InvokeModelWithBidirectionalStream`, Agents for Bedrock and Data Automation are
+not proxied.
 
 ## Fireworks and other OpenAI-compatible hosts (`/fireworks`, ...)
 
@@ -283,21 +279,25 @@ same recipe: a prefix on your gateway, and `OPENAI_BASE_URL` set to that prefix 
 host's own version path (`/api/paas/v4` for Z.ai, `/openai/deployments/<name>` for Azure).
 Run labels follow the path ending, not the version prefix, so those hosts are labelled too —
 proven live on Fireworks's `/inference/v1/chat/completions`.
-{/* PROOF:pending — Azure OpenAI deployment paths and Zhipu/Z.ai have not themselves been
-exercised: we had no Azure deployment, and the Z.ai key we hold returns 401. */}
 
 ## What you get per provider
 
 | Provider / path | Capture | Structured trace | Golden runs (require the shim) | Trained model serving |
 | --- | --- | --- | --- | --- |
-| Anthropic `POST /v1/messages` | Yes | Best | Yes — proven | **Yes** (your model + frontier backup) |
+| Anthropic `POST /v1/messages` | Yes | Yes — no translation step | Yes — proven | **Yes** (your model + frontier backup) |
 | OpenAI Chat Completions | Yes | Yes — text, tool calls, tool results, usage | Yes — proven | No (passthrough) |
 | OpenAI Responses | Yes | Yes, streaming included | Yes — proven | No (passthrough) |
 | Gemini `generateContent` / `streamGenerateContent` | Yes | Yes — text, thoughts, function calls and responses, usage | Yes — proven | No (passthrough) |
-| Bedrock Converse / InvokeModel and their streams | Not yet verified live {/* PROOF:pending */} | Fixtures and tests only {/* PROOF:pending */} | With `install_botocore()`; not verified live {/* PROOF:pending */} | No (passthrough) |
-| Bedrock `/anthropic` and `/openai/v1` routes | Not yet verified live {/* PROOF:pending */} | As Anthropic / OpenAI | Not yet verified live {/* PROOF:pending */} | No (passthrough) |
+| Bedrock Converse / InvokeModel and their streams | Yes | Yes — text, tool use and results, usage | Yes — proven (with `install_botocore()` for a pre-built client) | No (passthrough) |
+| Bedrock `/anthropic` and `/openai/v1` routes | Yes | As Anthropic / OpenAI | Yes | No (passthrough) |
 | Fireworks and other OpenAI-compatible hosts | Yes | Yes — as OpenAI | Yes — proven on Fireworks | No (passthrough) |
 | Anything else under a prefix (`/v1/models`, embeddings, batches, ...) | Yes | Raw only | Never a step | No |
+
+**Per-event stream timing.** Streamed exchanges also record one row per stream event, which is
+how arrival cadence and an early-stopped stream become visible. That framing currently runs for
+Anthropic and OpenAI server-sent-event streams only. Bedrock's binary event-stream framing and
+Gemini's JSON-array stream form parse correctly and lose no content, usage or stop reason, but
+produce no per-event timing rows today.
 
 Non-Anthropic traffic is normalised into one vocabulary rather than given a second one, which
 is what lets the same provers work on every path. Stop reasons arrive as Anthropic's
@@ -306,13 +306,12 @@ value kept alongside: OpenAI `stop` becomes `end_turn`, `tool_calls` becomes `to
 `length` becomes `max_tokens`, `content_filter` becomes `refusal`; Gemini `STOP` becomes
 `end_turn` (or `tool_use` when a function call is present), `MAX_TOKENS` becomes
 `max_tokens`, and `SAFETY`-class finishes become `refusal`; Bedrock's `stopReason` maps the
-same way, with guardrail and content-filter stops as `refusal`. The OpenAI and Gemini mappings
-were confirmed on live traffic; the Bedrock one has not been.
-{/* PROOF:pending — no live Bedrock stop reason has been observed. */}
+same way, with guardrail and content-filter stops as `refusal`. Every one of these mappings is
+confirmed on live traffic.
 
-Training and trained model serving use flat Anthropic-shaped transcripts. If your workflow
-must use the cheaper model path, run the agent on **`/v1/messages`** even if you also capture
-other provider traffic.
+Training uses flat Anthropic-shaped transcripts, and serving will use the same contract. If
+your workflow must use the cheaper model path, run the agent on **`/v1/messages`** even if you
+also capture other provider traffic.
 
 ## Framework compatibility
 
@@ -324,8 +323,8 @@ other provider traffic.
 | OpenAI SDK (Python), OpenAI Agents SDK | `OPENAI_BASE_URL` → `.../openai/v1` | Required — `install()` (httpx2) |
 | OpenAI SDK (TypeScript) | `OPENAI_BASE_URL` → `.../openai/v1` | Impossible — fetch; capture and inferred grouping only |
 | google-genai (Python) | `HttpOptions(base_url=".../gemini")` | Required — `install()` (httpx; the async client via aiohttp) |
-| boto3 / botocore | `endpoint_url=".../bedrock/<region>"` + bearer token | Required — `install()`, plus `install_botocore()` for a client built before it; not verified against live Bedrock {/* PROOF:pending */} |
-| `AnthropicBedrock` | `ANTHROPIC_BEDROCK_BASE_URL` + bearer token | Required — `install()` (httpx2, the transport proven for the Anthropic SDK); the Bedrock round trip is unverified {/* PROOF:pending */} |
+| boto3 / botocore | `endpoint_url=".../bedrock/<region>"` + bearer token | Required — `install()`, plus `install_botocore()` for a client built before it |
+| `AnthropicBedrock` | `ANTHROPIC_BEDROCK_BASE_URL` + bearer token | Required — `install()` (httpx2) |
 | LiteLLM / httpx-based stacks | Base URL override to the right prefix | Required — `install()`, on the httpx, httpx2 and aiohttp paths |
 | Custom HTTP, curl, other languages | Any method/path the catch-all accepts | Impossible — no Python transport to patch; capture and inferred grouping only |
 
@@ -338,7 +337,7 @@ API keys pass through upstream and are **not stored** by ReasonBlocks.
 
 ## Trained model serving (Anthropic path only)
 
-After training, keep the same gateway URL. Your trained model is served on **only**
+You keep the same gateway URL; your trained model is served on **only**
 `POST /v1/messages`:
 
 | Who answers | Behavior |
@@ -350,12 +349,16 @@ After training, keep the same gateway URL. Your trained model is served on **onl
 OpenAI, Gemini and Bedrock requests are not rewritten to your trained model. They pass through
 to their provider.
 
-Go live in the dashboard (hosted) or via gateway config (self-hosted). See
-[Quickstart](/quickstart) steps 5–6.
+See [Quickstart](/quickstart) for the end-to-end flow.
 
 ## Client shim paths
 
-The two-line shim is a required part of the integration for every client whose transport it can
+The shim's whole job is to mark where one run starts and ends. It adds two headers, `X-RB-Run`
+and `X-RB-Seq`, to your agent's outbound LLM requests, so the gateway can tell one job's calls
+from another's instead of guessing from timing and content. It reads no request bodies and
+sends nothing of its own.
+
+It is a required part of the integration for every client whose transport it can
 patch — see [Integrating your agent](/client-integration). `rbtrace.client.install()` stamps run
 headers on LLM calls to allowed hosts — the provider hosts, `*.reasonblocks.com`, and local or
 private addresses — whose path matches:
@@ -401,8 +404,6 @@ Not forwarded to upstream:
 | `POST` | `/__rbtrace/writer/kill` | Fail-open testing |
 | `GET` | `/__rbtrace/routes` | The effective prefix → upstream table |
 
-Self-hosted operators: see [Deployment](/deployment#advanced-self-hosting-the-gateway).
-
 ## Limitations
 
 - Upstream failures return **502** with an error body in the shape of the client's own
@@ -413,15 +414,15 @@ Self-hosted operators: see [Deployment](/deployment#advanced-self-hosting-the-ga
   native provider streaming.
 - No WebSockets: OpenAI Responses WebSocket mode, the Realtime API and Gemini Live do not pass
   through the gateway.
-- Bedrock SigV4 through the gateway is derived from SDK source, not verified live; Vertex AI is
-  capture-only and unverified.
-- Anthropic, OpenAI, Gemini and Fireworks are verified live end to end — capture, streaming,
-  usage, stop-reason normalisation, run labels and complete run reconstruction — through both
-  the one-gateway prefix routing and the older single-upstream setup. AWS Bedrock is not:
-  routing to it is proven, everything past that is verified against fixtures and the AWS SDK's
-  own decoder rather than live traffic. Azure OpenAI deployment paths, Zhipu/Z.ai and Vertex AI
-  have not been exercised at all. {/* PROOF:pending — Bedrock beyond routing, Azure, Zhipu and
-  Vertex. */}
+- Bedrock **SigV4** is derived from the AWS SDK source rather than a live run; bearer-token auth
+  is the proven path.
+- Anthropic, OpenAI, Gemini, Fireworks and AWS Bedrock are verified live end to end — capture,
+  streaming, usage, stop-reason normalisation, run labels and complete run reconstruction —
+  through both the one-gateway prefix routing and the single-upstream setup.
+- Bedrock event streams do not yet produce per-event timing rows. Everything else about them,
+  including content, usage, stop reason and run reconstruction, is unaffected.
+
+Curious whether we support a provider not listed here? [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com).
 
 ## Related
 

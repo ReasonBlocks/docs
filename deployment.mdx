@@ -1,41 +1,42 @@
 ---
 title: "Deployment"
-description: "Hosted gateway and distillation pipeline (default), plus an appendix for self-hosting the capture gateway."
+description: "How ReasonBlocks is deployed for your tenant: hosted gateway, capture storage, and the distillation pipeline."
 ---
 
 ## Hosted (default)
 
 ReasonBlocks operates the capture gateway, durable storage, trace reconstruction,
-distillation pipeline, and trained model serving for your tenant.
+distillation pipeline, and trained model serving for your tenant. Your trained model is served
+to you under license through the hosted gateway — you get inference against your model, not
+the weights to run or redistribute elsewhere.
 
 **What ReasonBlocks runs**
 
 - Hosted gateway at a tenant-specific URL (copy from [app.reasonblocks.com](https://app.reasonblocks.com) Quickstart)
 - Capture storage and trace reconstruction
 - Distillation jobs, training reports, and serving your trained model (frontier as backup)
-- Dashboard views for capture volume, golden-run counts, reports, and serving status
 
 **What you configure**
 
 | Item | Where |
 | --- | --- |
-| Gateway URL | Dashboard → Quickstart → copy into `ANTHROPIC_BASE_URL` |
+| Gateway URL | [app.reasonblocks.com](https://app.reasonblocks.com) → Quickstart → copy into `ANTHROPIC_BASE_URL` |
 | Anthropic API key | Your agent environment (passthrough; never stored by ReasonBlocks) |
 | Integration | [Integrating your agent](/client-integration): gateway base URL **and** the two-line `rbtrace` shim — both required |
-| Distillation | Dashboard → start job or schedule; opt-in, tenant-scoped |
-| Trained model serving | Dashboard → go live after training report; your model primary, frontier backup |
+| Distillation | Opt-in, tenant-scoped |
+| Trained model serving | Your model primary, frontier backup on edge cases |
 
 Your agent process needs the gateway URL via `ANTHROPIC_BASE_URL`, your existing API key, and
-the two-line client shim. No DuckDB files, no local `rbtrace proxy`, and no SSH access required
+the two-line client shim. No DuckDB files, no locally run gateway, and no SSH access required
 for the default path.
 
-Anthropic Messages is the primary path for training and serving your trained model. OpenAI Chat
+Anthropic Messages is the primary path for training and for trained model serving. OpenAI Chat
 Completions, Responses API, Gemini, and other routes are supported for capture via the same
 gateway URL with the correct client env var. See [Endpoint compatibility](/endpoint-compatibility).
 
 See the [Quickstart](/quickstart) for the end-to-end hosted flow.
 
-### Security and privacy (hosted)
+### Security and privacy
 
 - Anthropic API keys pass through the gateway to upstream and are **not stored** by ReasonBlocks.
 - Capture data and distillation artifacts stay in your tenant scope on ReasonBlocks infrastructure.
@@ -54,137 +55,7 @@ whose transport the shim cannot reach.
 
 ---
 
-## Advanced: self-hosting the gateway
+## On-prem and other deployment models
 
-Use this when you must run the capture gateway and storage on **your** infrastructure.
-ReasonBlocks can still run distillation in the hosted product if you export traces; or you can
-run the full pipeline locally with the `rbtrace` CLI.
-
-### Architecture (self-hosted)
-
-Three roles, usually split across processes on your ops hosts:
-
-1. **Gateway:** HTTP forwarder and capture writer (`python -m rbtrace.proxy`)
-2. **Storage:** append-only DuckDB file on a durable volume
-3. **Analysis:** read-only CLI (`python -m rbtrace inspect|trace|distill|loop`) on a schedule or on demand
-
-After local training completes, the same gateway can serve your trained model using
-operator config from the distill output. See [Quickstart — Advanced](/quickstart#advanced-run-the-pipeline-locally).
-
-### Install
-
-```bash
-pip install rbtrace   # when published to PyPI
-# or install from a release artifact / wheel you build from trace-reconstructor
-```
-
-Do not treat `git clone` + `pip install -e .` as the default customer path. Reserve editable
-installs for ReasonBlocks engineers and contributors.
-
-### Docker
-
-Use a released container image or your own build from
-[`trace-reconstructor`](https://github.com/ReasonBlocks/trace-reconstructor). Example shape:
-
-```bash
-docker compose up -d
-```
-
-Typical defaults in upstream compose examples:
-
-- Listens on **8787**
-- Persists to a named volume at `/data/capture.duckdb`
-- Health: `GET http://<host>:8787/__rbtrace/stats`
-
-Point your agent at your host:
-
-```bash
-export ANTHROPIC_BASE_URL="http://<your-host>:8787"
-```
-
-For agents in Docker, use `host.docker.internal` on Mac/Windows or the service name on the
-same compose network.
-
-#### Extract outputs from the volume
-
-```bash
-docker compose run --rm rbtrace inspect /data/capture.duckdb
-
-docker compose run --rm rbtrace trace /data/capture.duckdb \
-  --format rb_trace_v1 -o /data/traces.jsonl
-```
-
-Use profile `tools` if your compose file defines distill/loop services for scheduled jobs.
-
-### Bare metal
-
-```bash
-mkdir -p /var/lib/rbtrace
-python -m rbtrace.proxy \
-  --host 0.0.0.0 \
-  --port 8787 \
-  --db /var/lib/rbtrace/capture.duckdb \
-  --note production
-```
-
-Run under systemd, Kubernetes, or supervisord with `restart=always`. Mount
-`/var/lib/rbtrace` on persistent disk.
-
-#### Flush before backup
-
-The writer batches inserts. Before snapshotting the DuckDB file:
-
-```bash
-curl -X POST http://<your-host>:8787/__rbtrace/flush
-```
-
-### Long-term capture (self-hosted)
-
-- **Single DuckDB file** grows with traffic. Plan disk by exchange count (roughly tens of KB
-  per exchange compressed, varies with prompt size).
-- **No automatic retention** is built in. Rotate by stopping the gateway, archiving
-  `capture.duckdb`, and starting with a new `--db` path.
-- **`AGENTRECON_NOTE`** (or `--note` on the CLI) tags each capture run for slicing later.
-
-### Local distillation outputs
-
-```bash
-python -m rbtrace trace capture.duckdb --format rb_trace_v1 -o traces.jsonl
-python -m rbtrace distill capture.duckdb --tenant acme --out distill-acme
-python -m rbtrace loop capture.duckdb --tenant acme --out distill-acme --once
-```
-
-Filter to minable runs with `provenance.supports_universal_claims: true` (shown as **golden**
-in CLI summaries).
-
-Self-hosted trained model serving after training:
-
-```bash
-export RBTRACE_DISTILL_DIR=./distill-acme
-# Go live with your trained model on the gateway host (see trace-reconstructor operator docs)
-```
-
-### Monitoring (self-hosted)
-
-```bash
-curl http://<your-host>:8787/__rbtrace/stats
-```
-
-Watch `writer.queue_depth`, `writer.dropped`, and exchange counts. Non-zero `dropped` means
-the writer fell behind. Increase resources or raise `AGENTRECON_MAX_QUEUE`.
-
-### Security and privacy (self-hosted)
-
-- You operate the gateway, storage, and analysis CLI on **your** infrastructure.
-- API keys flow through the gateway to upstream. They are redacted in stored message text when
-  `RBTRACE_REDACT=1` (default).
-- Keep `*.duckdb` capture files and `distill-*/` artifacts on ops hosts, not in agent images.
-
-### What not to deploy to agent containers
-
-| Artifact | Notes |
-| --- | --- |
-| `*.duckdb` capture files | Ops infrastructure only |
-| Distillation artifacts | `distill-*/` directories on ops hosts |
-
-**Agent surface (hosted or self-hosted):** gateway URL + the two-line shim + your existing agent code.
+Need the gateway run on your own infrastructure, on-prem model serving, or another deployment
+model? [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) and we will work out the right setup with you.
