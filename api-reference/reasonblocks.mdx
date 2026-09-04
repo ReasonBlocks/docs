@@ -13,8 +13,7 @@ process or each job needs `run()` — see [Integrating your agent](/client-integ
 
 ## Gateway URL
 
-Copy your tenant gateway URL from [app.reasonblocks.com](https://app.reasonblocks.com)
-Quickstart:
+Your tenant gateway URL, issued at onboarding:
 
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
@@ -36,7 +35,7 @@ export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
 **Required** for capture and serving.
 
 <ParamField path="ANTHROPIC_BASE_URL" type="string" required>
-  Hosted gateway URL from the dashboard. Must be set **before** the agent process starts.
+  Your tenant's hosted gateway URL. Must be set **before** the agent process starts.
   The same URL is kept after training, when your trained model goes live.
 </ParamField>
 

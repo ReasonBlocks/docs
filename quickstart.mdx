@@ -1,17 +1,16 @@
 ---
 title: "Quickstart"
-description: "Copy your gateway URL from the dashboard, set one environment variable, add the two-line shim, and let ReasonBlocks capture your traces and train a cheaper task-specific model."
+description: "Point your agent at your ReasonBlocks gateway URL, add the two-line shim, and let ReasonBlocks capture your traces and train a cheaper task-specific model."
 ---
 
 ReasonBlocks hosts the capture gateway, storage, trace reconstruction, the distillation
-pipeline, and trained model serving. Your integration starts at
-[app.reasonblocks.com](https://app.reasonblocks.com), not on a local server.
+pipeline, and trained model serving. Your integration is one environment variable and two
+lines of code — nothing runs on your own servers.
 
 ## 1. Get your gateway URL
 
-Sign in to [app.reasonblocks.com](https://app.reasonblocks.com) and open **Quickstart**.
-
-Copy your tenant gateway URL. It looks like:
+We issue your tenant gateway URL when you onboard — [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) if you do not have one
+yet. It looks like:
 
 ```bash
 export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
