@@ -5,17 +5,16 @@ description: "Set one environment variable, capture your agent's workflow, and t
 
 ReasonBlocks captures how your production agent handles **its specific task**, then trains a
 **cheaper model** personalized to that workflow. Integration is one environment variable.
-ReasonBlocks hosts trace reconstruction, dataset mining, and training on **your** golden
-traces.
+ReasonBlocks hosts trace reconstruction, dataset mining, training, and the model itself once
+it's trained — served on **your** golden traces.
 
 ## The problem
 
 Production agents run the biggest model on every step because nothing smaller can be
 trusted with the workflow. Most of what a mature agent does is deeply repetitive: the same
 tools, the same verify scripts, the same repair moves against the same gate failures. You
-pay frontier prices (often hundreds or thousands of dollars per run) for behavior a
-task-specific model can learn from a few dozen recorded sessions of **that** agent doing
-**that** job.
+pay frontier prices for behavior a task-specific model can learn from a few dozen recorded
+sessions of **that** agent doing **that** job.
 
 ## How it works
 
@@ -64,7 +63,8 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
     trained on your tenant's own data** scores the run and escalates to the frontier model
     before a consequential action when your model's answer should not be trusted. Escalated
     episodes become training signal for the next cycle, so coverage widens over time. Same
-    `ANTHROPIC_BASE_URL`; your agent code unchanged. Weights stay scoped to your tenant.
+    `ANTHROPIC_BASE_URL`; your agent code unchanged. Your trained model is exclusively
+    yours — never shared with, or trained into, any other customer's model.
   </Step>
 </Steps>
 
@@ -77,8 +77,6 @@ task-specific model can learn from a few dozen recorded sessions of **that** age
   real helper scripts, and well-formed arguments from vocabulary mined from your own traces.
 - **Whole-action selection only.** Rejection sampling keeps or drops complete actions.
   Nothing selects on partial steps, which avoids low-quality training pairs.
-- **Spend ceilings everywhere.** Training jobs are cancelled the moment the provider's own
-  cost estimate crosses your cap. GPU deployments tear down in `finally`.
 - **Escalation is a trained decision, not a guess.** Whether to trust your model's answer or
   escalate to your frontier model is decided by a classifier trained on your tenant's own
   agreement data — not a fixed confidence threshold.

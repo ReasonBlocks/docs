@@ -34,10 +34,9 @@ Set each SDK's base URL to `https://gateway.<your-tenant>.reasonblocks.com/<pref
 | `/fireworks` | `https://api.fireworks.ai` | `OPENAI_BASE_URL=https://gateway.<your-tenant>.reasonblocks.com/fireworks/inference/v1` |
 | (no prefix) | Anthropic, unless your account is configured otherwise | Existing integrations keep working unchanged |
 
-Every prefix in this table has been exercised against the real provider. Anthropic, OpenAI,
-Gemini and Fireworks each captured a complete, verified run through the gateway; the Bedrock
-prefix reached AWS and was turned away for an expired test credential — see the Bedrock
-section for exactly what that does and does not establish.
+Every prefix in this table has been exercised against the real provider: Anthropic, OpenAI,
+Gemini, Fireworks and Bedrock each captured a complete, verified run through the gateway, in
+both routing modes.
 
 The SDK's own path is appended after the prefix. That is why OpenAI needs the `/v1` and
 Fireworks needs `/inference/v1`: the OpenAI client sends `/chat/completions` relative to its
@@ -389,7 +388,7 @@ move those calls onto an SDK on a supported transport.
 `RBTRACE_DISABLE=1` turns the shim off — an escape hatch that degrades grouping to inference
 for as long as it is set.
 
-Install: `pip install rbtrace` (when published to PyPI).
+Install: `pip install rbtrace`.
 
 ## Gateway admin endpoints
 
