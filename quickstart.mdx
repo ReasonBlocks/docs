@@ -56,30 +56,18 @@ path are unchanged.
 
 Training is **opt-in** and **tenant-scoped**. Once there are enough **golden** runs for this
 workflow, ReasonBlocks mines policies from them and fine-tunes a **cheaper task-specific
-model** on your workflow. Training runs on ReasonBlocks infrastructure under your tenant,
-within a spend ceiling.
+model** on your workflow, within a spend ceiling. When the job finishes, you get a report with
+the model identifier and whether it's ready to go live.
 
-## 5. The training report
+## 5. Go live with your trained model (same env var)
 
-Each finished job produces a report covering:
+Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL — nothing in your agent changes when
+your trained model starts answering.
 
-- Training summary and model identifier
-- Serving contract (flat transcript format)
-- Whether your trained model is ready to go live
-
-## 6. Go live with your trained model (same env var)
-
-Keep `ANTHROPIC_BASE_URL` pointed at the same gateway URL — nothing in your agent changes
-when your trained model starts answering.
-
-**How serving works:**
-
-1. **Your trained model.** Most steps hit the task-specific model trained on this workflow.
-2. **Frontier backup.** When your model lacks coverage or fails a step, ReasonBlocks
-   sends that request to your frontier model. Your agent still sees one API; the gateway
-   handles the switch.
-3. **Continuous improvement.** Fallback episodes are captured as edge cases and feed the next
-   training cycle so coverage expands over time.
+Per request, a classifier trained on your tenant's own data decides whether your model's
+answer can be trusted or whether the gateway should send that request to your frontier model
+instead. Escalated requests are captured as edge cases and feed the next training cycle, so
+coverage grows from the runs you keep capturing.
 
 The agent still speaks Anthropic Messages. ReasonBlocks serves the flat transcript contract
 from the training report.
