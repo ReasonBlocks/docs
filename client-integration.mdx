@@ -32,10 +32,10 @@ One gateway URL serves every provider; only the prefix and the SDK's base-URL se
 | AWS Bedrock (boto3, `AnthropicBedrock`) | `endpoint_url=".../bedrock/<region>"` / `ANTHROPIC_BEDROCK_BASE_URL=.../bedrock/<region>` |
 | Fireworks and other OpenAI-compatible hosts | `OPENAI_BASE_URL=.../fireworks/inference/v1` |
 
-Anthropic, OpenAI, Gemini and Fireworks are verified live through this setup. The Bedrock route
-reaches AWS but has not been verified end to end — see
-[Endpoint compatibility](/endpoint-compatibility#aws-bedrock-bedrock-region).
-{/* PROOF:pending — Bedrock. */}
+Anthropic, OpenAI, Gemini, Fireworks and AWS Bedrock are each verified live through this
+setup — a complete run captured through the gateway, in both routing modes. Per-path detail is
+on [Endpoint compatibility](/endpoint-compatibility#aws-bedrock-bedrock-region); Bedrock's
+proven auth mode is the bearer token (`AWS_BEARER_TOKEN_BEDROCK`), not SigV4.
 
 Per-provider quickstarts, and what each path gets, are on
 [Endpoint compatibility](/endpoint-compatibility).
