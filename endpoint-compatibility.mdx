@@ -13,8 +13,7 @@ prefix forwards.
 `ANTHROPIC_BASE_URL` pointed at the `/anthropic` prefix. It matches how most agent frameworks
 call Claude today, and it is the reference format: the reconstruction's own vocabulary is
 Anthropic's, so this path is read with no translation step and therefore carries no translation
-risk. **Trained model serving** uses this same wire shape wherever it shows up — the
-direct Anthropic API and Bedrock's own routes for an Anthropic model both qualify.
+risk. It is also the path **trained model serving** uses.
 
 OpenAI, Gemini, AWS Bedrock, Fireworks and other OpenAI-compatible hosts use the **same
 gateway URL** with their own prefix. They get capture, structured traces and golden-run mining.
@@ -285,7 +284,7 @@ verified live on Fireworks's `/inference/v1/chat/completions`.
 | OpenAI Chat Completions | Yes | Yes — text, tool calls, tool results, usage | Yes — proven | No (passthrough) |
 | OpenAI Responses | Yes | Yes, streaming included | Yes — proven | No (passthrough) |
 | Gemini `generateContent` / `streamGenerateContent` | Yes | Yes — text, thoughts, function calls and responses, usage | Yes — proven | No (passthrough) |
-| Bedrock Converse / InvokeModel and their streams | Yes | Yes — text, tool use and results, usage | Yes — proven (with `install_botocore()` for a pre-built client) | **Yes** (your model + frontier backup) |
+| Bedrock Converse / InvokeModel and their streams | Yes | Yes — text, tool use and results, usage | Yes — proven (with `install_botocore()` for a pre-built client) | No (passthrough) |
 | Bedrock `/anthropic` and `/openai/v1` routes | Yes | As Anthropic / OpenAI | Yes | No (passthrough) |
 | Fireworks and other OpenAI-compatible hosts | Yes | Yes — as OpenAI | Yes — proven on Fireworks | No (passthrough) |
 | Anything else under a prefix (`/v1/models`, embeddings, batches, ...) | Yes | Raw only | Never a step | No |
@@ -331,12 +330,11 @@ SDK — rather than to settle for inferred grouping.
 
 API keys pass through upstream and are **not stored** by ReasonBlocks.
 
-## Trained model serving
+## Trained model serving (Anthropic path only)
 
-You keep the same gateway URL. Your trained model is served wherever your agent already
-speaks Anthropic's Messages shape: the direct API (`POST /v1/messages`), and Bedrock's own
-routes for an Anthropic model (`InvokeModel`, `Converse`) since both carry that same shape
-with the model id moved into the URL instead of the body.
+You keep the same gateway URL. Your trained model answers on **`POST /v1/messages`** — the
+Anthropic Messages path reached through `ANTHROPIC_BASE_URL`. That is the shape it was trained
+on and the only route the serving contract implements.
 
 | Who answers | Behavior |
 | --- | --- |
@@ -344,9 +342,10 @@ with the model id moved into the URL instead of the body.
 | **Frontier backup** | Frontier model when your model lacks coverage or fails |
 | **Edge cases** | Backup traffic is captured for the next training cycle |
 
-OpenAI and Gemini requests are not rewritten to your trained model — they pass through to
-their provider. Streaming Bedrock calls (`InvokeModelWithResponseStream`, `ConverseStream`)
-also pass through unchanged for now; only the non-streaming calls are served.
+Every other path is capture-only. OpenAI, Gemini, Fireworks and Bedrock requests — including
+Bedrock's routes for an Anthropic model — are recorded and forwarded to their provider
+unchanged. To run a workflow captured there on the cheaper model, point the agent at
+`/v1/messages`.
 
 See [Quickstart](/quickstart) for the end-to-end flow.
 
