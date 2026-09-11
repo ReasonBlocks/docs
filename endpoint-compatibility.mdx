@@ -3,6 +3,13 @@ title: "Endpoint compatibility"
 description: "One gateway URL for every provider: prefixes, per-provider setup, what is captured, and which features apply per endpoint on the ReasonBlocks gateway."
 ---
 
+<Note>
+This reference describes the legacy capture gateway. The platform's
+[full-agent capture endpoints](/full-agent-training) have a separate serving
+contract for OpenAI Chat Completions and Anthropic Messages. Use the capture URL
+returned in **Data** when following that workflow.
+</Note>
+
 The hosted gateway is a **byte-transparent reverse proxy**. Your client sends normal provider
 HTTP requests to the gateway plus a short **provider prefix**; ReasonBlocks strips the prefix,
 forwards the rest of the path and query string unchanged to that provider, and labels the
