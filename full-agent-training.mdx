@@ -1,0 +1,181 @@
+---
+title: "Train your complete agent"
+description: "Connect representative tasks and an isolated test environment, train with on-policy distillation, then review complete-task results before enabling traffic."
+---
+
+Connect your agent's data and one isolated test environment. ReasonBlocks trains
+a smaller model, calibrates its guard, and compares complete tasks before you
+decide whether to send the release customer traffic.
+
+This guide covers **Full agent distillation** in the platform's **Training**
+page. It requires a deployment with the full-agent worker enabled. The older
+[gateway quickstart](/quickstart) and **Saved responses** workflow remain
+separate; their golden-run filtering and serving contracts do not describe this
+training method.
+
+## 1. Connect your data
+
+In **Data**, create a source and copy its capture URL and capture key. Keep your
+existing provider API key. Send the capture key in `x-reasonblocks-key`, alongside
+your normal provider authentication. Use the exact URL returned for your source:
+
+- OpenAI Chat Completions: `/capture/SOURCE_ID/openai/v1` as the SDK base URL.
+- Anthropic Messages: `/capture/SOURCE_ID/anthropic` as the SDK base URL.
+
+Resolve these paths against your platform API's HTTPS origin. These are platform
+capture endpoints, not the legacy gateway's provider prefixes. Treat the capture
+key as a secret; it expires after seven days and can be rotated in **Data**.
+
+For every workflow execution, send:
+
+```http
+x-reasonblocks-key: YOUR_CAPTURE_KEY
+x-rb-run: UNIQUE_EXECUTION_ID
+x-rb-snapshot-id: OPAQUE_STARTING_SNAPSHOT_ID
+```
+
+Generate a new `x-rb-run` for each task and reuse it on every model call in that
+task. Use 1–128 letters, numbers, underscores, periods, colons or hyphens. Keep
+the full conversation, policy, tool definitions, and actual tool results in each
+request. Append the returned assistant message and its tool result before the
+next call; your application continues executing its tools.
+
+The snapshot ID refers to a repeatable starting state in your test environment.
+Freeze it before the workflow changes that state and keep it unchanged for the
+whole execution. Capture does not create the snapshot for you.
+
+You can instead upload JSONL containing `id`, `group_id`, OpenAI-shaped text
+`messages`, function `tools`, and `metadata.environment_snapshot_id`. Use the
+same `group_id` for related attempts so they cannot cross the training,
+calibration and evaluation split. The initial history, tool contract, policy
+version and snapshot must agree within a group. A missing snapshot ID defaults
+to the group ID, which must still exist in your environment.
+
+Provide one complete starting conversation per task, with no pending tool calls.
+Do not include hidden expected outcomes in the conversation, tool definitions or
+snapshot names. Multiple rows from a long conversation are not independent tasks.
+The default recipe needs at least **32 independent training tasks after** separate
+calibration and evaluation groups have been reserved.
+The current source capture limit is 200 requests. For longer workflows or a
+larger collection, upload curated initial-task JSONL instead; the upload limit is
+2 MiB.
+
+## 2. Connect a test environment once
+
+Ask your administrator to register an isolated copy of your agent's tools and
+state. It appears in **Training** for your organization. For each attempt, it must
+restore the task's snapshot into a fresh disposable session, execute newly
+proposed tool actions, return their real results, and preserve state until the
+task ends. Training writes must stay inside this environment.
+
+An independent outcome evaluator is also required. It may be your deterministic
+checker or an identified judge such as Fable. Judge assessments are reported as
+judge assessments. The evaluator inspects completed tasks for calibration and
+evaluation; its answers are not inputs to distillation or the serving guard.
+
+Your administrator can follow the platform's
+[sandbox connection guide](https://github.com/ReasonBlocks/platform/blob/codex/customer-full-agent/docs/customer-full-agent-sandbox.md),
+including an executable local example, and
+[deployment guide](https://github.com/ReasonBlocks/platform/blob/codex/customer-full-agent/docs/full-agent-deployment.md).
+Repository access may be required. Provider credentials, server URLs and registry
+files belong in that administrator setup, not in your uploaded tasks.
+
+## 3. Prepare and approve training
+
+In **Training**, select your data source and **Full agent distillation**. A single
+connected environment is selected automatically. Choose **Prepare training** to
+freeze the data and check the snapshots, tools, evaluator and local model setup.
+Preparation makes no model calls. If it fails, fix the reported issue and choose
+**Recheck setup**. Remote provider access and funding are verified during the
+authorized provider stages, not by these local checks.
+
+The current preset uses **`Qwen/Qwen3.6-35B-A3B`** as the student and
+**`Qwen/Qwen3.5-397B-A17B`** as both the teacher and serving fallback. The student
+attempts tasks and calls tools; the open teacher scores the student's own sampled
+tokens. Those token scores drive **token-level on-policy distillation**. This
+recipe does not require golden-trace filtering or switch to teacher-text
+supervised fine-tuning when token scores are unavailable.
+
+The preset runs 75 updates, with 32 task groups and two fresh trajectories per
+group, rank 16, learning rate 0.00003 and training temperature 1. Review the plan
+and cost estimate, set a run spending cap, and approve paid work. The cap and
+conservative reservation are limits, not predicted invoices. Baselines, training
+and evaluation share the run budget. A later budget pause can be resumed after
+adding credits, once any uncertain provider reservations are resolved.
+
+### API setup
+
+For API integrations, create a run with an authenticated `POST /api/pipelines`.
+Use your organization and populated data source IDs and the connected environment
+ID. Set `config.mode` explicitly: omitting it selects the legacy request-response
+method.
+
+```json
+{
+  "org_id": "YOUR_ORGANIZATION_UUID",
+  "name": "Support agent",
+  "data_source_id": "YOUR_DATA_SOURCE_UUID",
+  "budget_usd": 500,
+  "config": {
+    "mode": "full_agent_opd",
+    "environment_id": "support-test"
+  }
+}
+```
+
+The example $500 cap is not an estimate or a promise of completion. Choose your
+cap from the prepared estimate and your organization's allowed limit. Creating a
+run does not approve spending. `POST /api/pipelines/PIPELINE_ID/run` queues free
+preparation; review its checks and estimate in **Training** before approval.
+API approval uses `/approve-eval` with reviewed `criteria` and `notes`; it
+authorizes the paid baseline, training and evaluation stages together.
+
+## 4. Review complete-task results
+
+The report compares the stock student, teacher, distilled student, and distilled
+student with its guard on separate evaluation tasks. It includes task success,
+mean and p95 latency, and inference cost, with upfront training and evaluation
+spending reported separately. It identifies the evaluator and retains incomplete
+or unknown outcomes instead of treating them as successful tasks.
+
+Inference includes student calls, discarded student proposals, teacher fallback
+and embeddings. Token-based costs are tariff estimates until invoices are
+reconciled. Paid judge evaluation is separate from serving cost. Sandbox hosting
+and business-tool charges are external costs unless separately metered. Missing
+measurements are unavailable, not zero.
+
+## 5. Enable the reviewed release
+
+Select a traffic share and confirm inference spending in **Training**. Keep the
+same capture URL, full history and stable `x-rb-run`. The rollout share selects
+which tasks enter the candidate system; the guard's teacher escalation rate is
+a separate measurement.
+
+The guard checks customer coverage, tool validity, repeated calls, observed
+errors and calibrated limits. It can escalate unfamiliar tasks to the frozen
+teacher. The teacher continues the actual conversation and tool state, without
+replaying earlier actions. Your application still executes the tool calls.
+Out-of-distribution detection is present, but these task evaluations do **not**
+establish its detection accuracy; that requires a separate labeled test.
+
+Use non-streaming OpenAI Chat Completions or Anthropic Messages with text and
+ordinary function tools. Omit temperature and output-token overrides to use the
+reviewed release defaults: **0.7** and **1,536 tokens**. The Anthropic SDK requires
+`max_tokens`; set it to `1536`. Explicit smaller output caps are accepted.
+
+Unsupported initial requests, including images, forced tool selection, strict
+tool schemas, response-format controls or an incompatible temperature, remain
+with your original provider. A missing run ID also keeps a new request upstream.
+Once a guarded episode starts, changing its history or request contract causes
+an error rather than silently moving it to another provider.
+
+Ask your administrator to keep each run on the same API worker for its entire
+task. An interrupted or different worker cannot transparently resume its live
+runtime. Reconcile uncertain tool state before starting a new execution; do not
+blindly retry a write under a new run ID. Use the application's own tool timeout
+and idempotency handling.
+
+**Return to original provider** stops admission of new candidate tasks. It cannot
+undo an action already executed, and it does not restart an active task. Keep the
+reviewed checkpoint available and maintain sufficient inference credits while
+the release is enabled.
