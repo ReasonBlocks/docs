@@ -86,10 +86,12 @@ candidate passed evaluation.
 
 Compare the reported stock student, teacher, distilled student and guarded
 candidate on the frozen held-out tasks. The built-in sandbox evaluation runs
-these four comparisons. Review task success, inference cost,
-mean and p95 latency, tool failures and evaluator identity. Keep upfront training
-cost separate from inference cost. Mark missing measurements and incomplete
-outcomes as unknown.
+these four comparisons. Review, per arm, successes (with confirmed successes and
+unknown attempts listed separately), inference cost, evaluation cost, mean and p95
+latency, failed and invalid attempts, teacher-used attempts, and the evaluator
+identity. The report carries no tool-failure count; a tool error surfaces only as a
+failed attempt once it aborts the episode. Keep upfront training cost separate from
+inference cost. Mark missing measurements and incomplete outcomes as unknown.
 
 The recommendation should cite the actual report and distinguish measured
 results from assumptions. For example:

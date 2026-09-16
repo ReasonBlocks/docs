@@ -44,7 +44,7 @@ the provider client makes carries `x-rb-run` (which task) and `x-rb-seq` (call n
 within the task). The dashboard groups a task's calls by `x-rb-run` and, with
 `x-rb-snapshot-id`, uses that group for full-agent training. The sequence number is
 carried on every call; self-hosted gateway reconstruction uses it to prove a run
-complete, while the dashboard records it without gating training on it. The labelling
+complete, while the dashboard ignores it and groups solely by `x-rb-run`. The labelling
 patches only the HTTP transport the SDK uses, reads no bodies and sends nothing of its
 own. `RBTRACE_DISABLE=1` turns it off; `python -m rbtrace doctor` reports whether calls
 from an environment will be labelled.
@@ -68,7 +68,7 @@ headers = reasonblocks_setup.run_headers()
 | Header | Requirement |
 | --- | --- |
 | `x-rb-run` | One ID per task, retained through all its model calls; the dashboard's grouping key |
-| `x-rb-seq` | Added automatically: 1, 2, 3 … within the task. Recorded by the dashboard; used by self-hosted gateway reconstruction, where a gap leaves the run unproven |
+| `x-rb-seq` | Added automatically: 1, 2, 3 … within the task. Ignored by the dashboard; used by self-hosted gateway reconstruction, where a gap leaves the run unproven |
 | `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture |
 
 IDs use 1–128 letters, numbers, underscores, periods, colons or hyphens. Header names

@@ -127,8 +127,8 @@ because importing it installs run labelling for the process — every model call
 through the client carries `x-rb-run` and `x-rb-seq`. The dashboard groups a
 task's calls by `x-rb-run` and uses `x-rb-snapshot-id` for full-agent training.
 The sequence number is carried on every call; self-hosted gateway reconstruction
-uses it to prove a run complete, and the dashboard records it without gating
-training on it.
+uses it to prove a run complete. The dashboard does not read it — it groups solely
+by `x-rb-run`.
 
 Whether you must name tasks depends on the process:
 

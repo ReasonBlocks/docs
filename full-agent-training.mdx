@@ -7,7 +7,7 @@ Connect your agent's data and one isolated test environment. ReasonBlocks trains
 a smaller model, calibrates its guard, and compares complete tasks before you
 decide whether to send the release customer traffic.
 
-This guide covers **Full agent distillation** in the platform's **Training**
+This guide covers **Complete agent** training in the platform's **Training**
 page. It requires a deployment with the full-agent worker enabled. To connect
 your application and capture calls first, follow [Quickstart](/quickstart).
 Connecting and ordinary capture require no sandbox. The resettable environment
@@ -73,9 +73,9 @@ Do not include hidden expected outcomes in the conversation, tool definitions or
 snapshot names. Multiple rows from a long conversation are not independent tasks.
 The default recipe needs at least **32 independent training tasks after** separate
 calibration and evaluation groups have been reserved.
-The current source capture limit is 200 requests. For longer workflows or a
-larger collection, upload curated initial-task JSONL instead; the upload limit is
-2 MiB.
+The current source capture limit is 512 requests, and each captured request
+body is capped at 2 MiB. For longer workflows or a larger collection, upload
+curated initial-task JSONL instead; the upload limit is 50 MiB.
 
 ## 2. Connect a test environment once
 
@@ -106,7 +106,7 @@ in your uploaded tasks.
 
 ## 3. Prepare and approve training
 
-In **Training**, select your data source and **Full agent distillation**. A single
+In **Training**, select your data source and **Complete agent**. A single
 connected environment is selected automatically. Choose **Prepare training** to
 freeze the data and check the snapshots, tools, evaluator and local model setup.
 Preparation makes no model calls. If it fails, fix the reported issue and choose
