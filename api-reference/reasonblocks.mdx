@@ -41,17 +41,25 @@ client = OpenAI(**reasonblocks_setup.client_kwargs())
 
 Importing the generated helper installs run labelling for the process: every model call
 the provider client makes carries `x-rb-run` (which task) and `x-rb-seq` (call number
-within the task). The sequence is what lets a run be proven complete, and only
-proven-complete runs are eligible for training. It patches only the HTTP transport the
-SDK uses, reads no bodies and sends nothing of its own. `RBTRACE_DISABLE=1` turns it off;
-`python -m rbtrace doctor` reports whether calls from an environment will be labelled.
+within the task). The dashboard groups a task's calls by `x-rb-run` and, with
+`x-rb-snapshot-id`, uses that group for full-agent training. The sequence number is
+carried on every call; self-hosted gateway reconstruction uses it to prove a run
+complete, while the dashboard records it without gating training on it. The labelling
+patches only the HTTP transport the SDK uses, reads no bodies and sends nothing of its
+own. `RBTRACE_DISABLE=1` turns it off; `python -m rbtrace doctor` reports whether calls
+from an environment will be labelled.
+
+Without a named task the helper uses one process-wide run ID. That is correct for a
+process that handles exactly one task; any process that handles more than one task
+must name each task with `run_headers()`.
 
 ## `run_headers(snapshot_id=None, run_id=None)`
 
-Optional. Returns headers naming one task; if `run_id` is omitted, generates a new ID.
-Call once per task and reuse the result as `extra_headers` on every model call of that
-task when one process runs many jobs. Sequence numbers are still added automatically,
-keyed by the run ID.
+Returns headers naming one task; if `run_id` is omitted, generates a new ID. Call once
+per task and reuse the result as `extra_headers` on every model call of that task.
+Required for any long-lived or multi-task process (queue worker, web server, batch
+loop); unnecessary only when a process runs a single task. Sequence numbers are still
+added automatically, keyed by the run ID.
 
 ```python
 headers = reasonblocks_setup.run_headers()
@@ -59,12 +67,14 @@ headers = reasonblocks_setup.run_headers()
 
 | Header | Requirement |
 | --- | --- |
-| `x-rb-run` | One ID per task, retained through all its model calls |
-| `x-rb-seq` | Added automatically: 1, 2, 3 … within the task; a gap marks the run unprovable |
+| `x-rb-run` | One ID per task, retained through all its model calls; the dashboard's grouping key |
+| `x-rb-seq` | Added automatically: 1, 2, 3 … within the task. Recorded by the dashboard; used by self-hosted gateway reconstruction, where a gap leaves the run unproven |
 | `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture |
 
-IDs use 1–128 letters, numbers, underscores, periods, colons or hyphens. The helper
-attaches identifiers; it does not reset tools or create snapshots.
+IDs use 1–128 letters, numbers, underscores, periods, colons or hyphens. Header names
+are case-insensitive: `X-RB-Run` / `X-RB-Seq` (as the shim writes them) and
+`x-rb-run` / `x-rb-seq` are the same headers. The helper attaches identifiers; it does
+not reset tools or create snapshots.
 
 ## CLI checks and migration
 

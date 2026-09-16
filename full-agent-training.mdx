@@ -30,17 +30,23 @@ your normal provider authentication. Use the exact URL returned for your source:
 - OpenAI Chat Completions: `/capture/SOURCE_ID/openai/v1` as the SDK base URL.
 - Anthropic Messages: `/capture/SOURCE_ID/anthropic` as the SDK base URL.
 
-Resolve these paths against your platform API's HTTPS origin and use the exact
-URL returned for the source. Treat the capture key as a secret; it expires after
-seven days and can be rotated in **Data**.
+Do not build a URL from a host and these paths; the source's URL in **Data** is
+the one to use. Treat the capture key as a secret; it expires after seven days
+and can be rotated in **Data**.
 
-For every workflow execution, send:
+For every workflow execution, each model call carries:
 
 ```http
 x-reasonblocks-key: YOUR_CAPTURE_KEY
 x-rb-run: UNIQUE_EXECUTION_ID
+x-rb-seq: CALL_NUMBER_WITHIN_THE_TASK
 x-rb-snapshot-id: OPAQUE_STARTING_SNAPSHOT_ID
 ```
+
+With the generated helper, `x-reasonblocks-key` comes from `client_kwargs()`,
+`x-rb-run` and `x-rb-snapshot-id` from `run_headers(snapshot_id=...)`, and
+`x-rb-seq` is sent automatically (1, 2, 3 … within the task) by the labelling the
+helper installs on import. The dashboard groups a task's calls by `x-rb-run`.
 
 Generate a new `x-rb-run` for each task and reuse it on every model call in that
 task. Use 1–128 letters, numbers, underscores, periods, colons or hyphens. Keep
@@ -91,12 +97,12 @@ checker or an identified judge such as Fable. Judge assessments are reported as
 judge assessments. The evaluator inspects completed tasks for calibration and
 evaluation; its answers are not inputs to distillation or the serving guard.
 
-Your administrator can follow the platform's
-[sandbox connection guide](https://github.com/ReasonBlocks/platform/blob/codex/customer-full-agent/docs/customer-full-agent-sandbox.md),
-including an executable local example, and
-[deployment guide](https://github.com/ReasonBlocks/platform/blob/codex/customer-full-agent/docs/full-agent-deployment.md).
-Repository access may be required. Provider credentials, server URLs and registry
-files belong in that administrator setup, not in your uploaded tasks.
+Your administrator needs two documents from your ReasonBlocks contact: the
+sandbox connection guide, which describes the adapter's snapshot/restore, tool
+execution and evaluator contract and includes a runnable local example, and the
+full-agent deployment guide for the API and worker. Provider credentials, server
+URLs and the environment registry file belong in that administrator setup, not
+in your uploaded tasks.
 
 ## 3. Prepare and approve training
 

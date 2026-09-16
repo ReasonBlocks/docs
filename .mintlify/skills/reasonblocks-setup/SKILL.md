@@ -79,8 +79,21 @@ Construct the existing `OpenAI`, `AsyncOpenAI`, `Anthropic` or `AsyncAnthropic`
 client with `**reasonblocks_setup.client_kwargs()`. Merge other settings and
 headers deliberately. These kwargs supply the exact source URL and capture auth.
 
-Call `reasonblocks_setup.run_headers()` once at each logical task boundary and
-pass the result as `extra_headers=headers` on every model call in that task.
+Importing `reasonblocks_setup` performs `rbtrace.client.install()` itself, so every
+model call the provider SDK makes carries `x-rb-run` and `x-rb-seq`. Do not add a
+manual `install()` call. The dashboard groups a task's calls by `x-rb-run`, and
+one `x-rb-run` is one training task.
+
+Decide by process shape:
+
+- One task per process: nothing more to do; the helper labels every call with one
+  run ID.
+- Any long-lived or multi-task process (queue worker, web server, batch loop,
+  thread pool): call `reasonblocks_setup.run_headers()` once at each logical task
+  boundary and pass the result as `extra_headers=headers` on every model call in
+  that task. This is required; without it every task collapses into one
+  process-wide `x-rb-run`.
+
 Keep headers in each concurrent job's own state. Use `run_id=existing_task_id`
 when a suitable task ID already exists. Never create a new ID per model step or
 share one across unrelated tasks. Retain full messages, policy, tool definitions
@@ -104,9 +117,12 @@ source, and `--dry-run` to preview. Migration backs up recognized generated file
 and refuses customized helpers. Inspect and merge those customizations instead
 of discarding them. It does not edit arbitrary application code.
 
-Replace old helper `install()` and shim `run()`/`new_run()` calls with current
-client construction and explicit per-task `run_headers()` passed on every call.
-Remove the old gateway base-URL setting from deployment configuration, then
+Update application code to construct the client with `client_kwargs()`. The
+generated helper performs `install()` on import, so remove any manual
+`rbtrace.client.install()` call (a second call is a harmless no-op). An existing
+`shim.run()` / `shim.new_run()` scope can stay or become `run_headers()`; both
+name a task, and a process that runs many tasks needs one of them at every task
+boundary. Remove the old gateway base-URL setting from deployment configuration, then
 restart/reconstruct affected clients and processes. A config-file rewrite alone
 does not change an already-constructed client or its capture authentication.
 Do not turn unsupported providers or Responses calls into Anthropic/Chat

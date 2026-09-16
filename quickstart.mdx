@@ -25,20 +25,24 @@ Read https://docs.reasonblocks.com/agent-setup.md and integrate ReasonBlocks int
 ```
 
 The [setup guide](/agent-setup) covers installing the CLI, generating the helper,
-connecting your client and retaining a run ID across all calls in one task.
+connecting your client and retaining a run ID across all calls in one task. A
+run is all the model calls in one task, labelled with one `x-rb-run` header.
 
 <Note>
 The setup CLI is a **release preview** requiring `rbtrace==1.1.0`.
 Public `rbtrace==1.0.0` does not include it. Use a preview build supplied by
-ReasonBlocks or wait for the release before running those commands.
+ReasonBlocks or wait for the release before running those commands. The
+plain-text page at `/agent-setup.md` resolves once this documentation release
+is published.
 </Note>
 
 ## 3. Verify capture
 
-Run the local `doctor` check in your application environment and test the actual
-entrypoint. When you run a real workflow, confirm that its records appear in
-**Data**. The local check verifies configuration and capture-key presence; it
-does not contact the service or validate credentials remotely.
+Run the local check, `python -m rbtrace doctor --path . --json`, in your
+application environment and test the actual entrypoint. When you run a real
+workflow, confirm that its records appear in **Data**. The local check verifies
+configuration and capture-key presence; it does not contact the service or
+validate credentials remotely.
 
 Model calls use your provider account and incur its normal fees. See
 [Integrating your agent](/client-integration) for task boundaries and coverage.

@@ -15,11 +15,12 @@ a small **Python integration helper** that connects your existing client; and an
 Python client library—the provider's SDK—continues making model requests.
 
 <Note>
-**Release preview:** the CLI and helper require `rbtrace==1.1.0`. Public PyPI
+**Availability:** the CLI and helper require `rbtrace==1.1.0`. Public PyPI
 currently has `1.0.0`, which does not include these commands. Use a 1.1.0 preview
 build supplied by ReasonBlocks, or wait for its release before running the
-installation examples. The handoff page and hosted skill must also be published
-before their public links work.
+installation examples. The plain-text copy of this page at `/agent-setup.md` and
+the hosted skill (`npx skills add https://docs.reasonblocks.com`) resolve once
+this documentation release is published.
 </Note>
 
 ## What you need
@@ -39,7 +40,7 @@ rotating a key invalidates the previous one.
 
 ## 1. Install into the application environment
 
-After 1.1.0 is released, use your project's package manager. For uv:
+Use your project's package manager. For uv:
 
 ```bash
 uv add rbtrace==1.1.0
@@ -123,10 +124,21 @@ Async clients accept the same settings. Preserve the application's other client
 settings and merge existing headers without replacing the capture headers.
 The helper supplies the source base URL and the `x-reasonblocks-key` header, and —
 because importing it installs run labelling for the process — every model call made
-through the client carries `x-rb-run` and `x-rb-seq`. That is the whole integration
-for capture; the sequence numbers are what make a task's run provably complete.
+through the client carries `x-rb-run` and `x-rb-seq`. The dashboard groups a
+task's calls by `x-rb-run` and uses `x-rb-snapshot-id` for full-agent training.
+The sequence number is carried on every call; self-hosted gateway reconstruction
+uses it to prove a run complete, and the dashboard records it without gating
+training on it.
 
-Naming tasks yourself is optional and matters only when one process runs many jobs.
+Whether you must name tasks depends on the process:
+
+- **One task per process:** nothing more to do; the helper labels every call with
+  one run ID.
+- **Any long-lived or multi-task process** — a queue worker, a web server, a batch
+  loop: `run_headers()` at every task boundary is **required**. Without it the
+  helper stamps one process-wide run ID, every task collapses into a single
+  `x-rb-run`, and for the dashboard one `x-rb-run` is one training task.
+
 At the start of **each task**, create its headers once:
 
 ```python
@@ -152,8 +164,8 @@ and tool results. Create fresh headers for the next task; queue workers and
 concurrent jobs must each retain their own headers. If your application already
 has a task ID, pass `run_id=existing_task_id` to `run_headers()`.
 
-The helper uses explicit client settings; task headers are optional. Your application
-continues executing its tools.
+The helper uses explicit client settings. Your application continues executing
+its tools.
 
 ## 4. Check the setup
 
@@ -236,7 +248,7 @@ training results and application tests through those stages.
 
 ## Install the reusable agent skill
 
-After this documentation release is published:
+Once this documentation release is published (see the availability note above):
 
 ```bash
 npx skills add https://docs.reasonblocks.com

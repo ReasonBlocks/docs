@@ -35,14 +35,25 @@ of changing `sys.path`.
 
 Importing the generated helper installs run labelling for the process: every model
 call your provider client makes carries an `x-rb-run` header (which task the call
-belongs to) and an `x-rb-seq` header (this is call number *n* of that task). The
-sequence is what lets a run be proven complete, and only proven-complete runs are
-eligible for training — so nothing else in your code has to change for capture to
-be useful. `RBTRACE_DISABLE=1` turns the labelling off without removing the import.
+belongs to) and an `x-rb-seq` header (this is call number *n* of that task).
+The dashboard groups a task's calls by `x-rb-run`; that group is the unit
+full-agent training works on, together with `x-rb-snapshot-id` when you supply
+one. The sequence number is carried on every call and is what self-hosted gateway
+reconstruction uses to prove a run complete; the dashboard records it but does
+not gate training on it. `RBTRACE_DISABLE=1` turns the labelling off without
+removing the import.
 
-Naming tasks yourself is optional. When one process handles many logical jobs — a
-queue worker, a batch loop, a thread pool — create headers once at each task boundary
-so the jobs do not merge into one run:
+Whether you must name tasks depends on the process shape:
+
+- **One task per process** (a script that handles one job and exits): nothing to
+  do. The helper labels every call with one run ID for the process.
+- **Any long-lived or multi-task process** (a queue worker, a web server, a batch
+  loop, a thread pool): call `run_headers()` at every task boundary. This is
+  required. Without it the helper stamps one process-wide run ID, so every task
+  the process handles collapses into a single `x-rb-run` — and for the dashboard,
+  one `x-rb-run` is one training task.
+
+Create the headers once at the start of each task:
 
 ```python
 headers = reasonblocks_setup.run_headers()
@@ -65,6 +76,7 @@ task gets new headers. Keep them in task-local state for concurrent jobs and
 long-lived workers. Pass `run_id=existing_task_id` if your application already
 has a suitable ID: 1–128 letters, numbers, underscores, periods, colons or hyphens.
 The sequence number is still added automatically, keyed by the run ID you passed.
+Header names are case-insensitive; `X-RB-Run` and `x-rb-run` are the same header.
 
 Keep the full conversation, policy, tool definitions and actual tool results in
 each request. Add the returned assistant message and tool results before the next
