@@ -21,7 +21,8 @@ Use your normal provider authentication alongside `x-reasonblocks-key`, carrying
 the dashboard-issued capture key. The generated helper labels every call with
 `x-rb-run` (the task) and `x-rb-seq` (the call's number within it); reuse the same
 `x-rb-run` across every call in one task. A process that handles more than one
-task must name each task with `run_headers()`, or every task shares one `x-rb-run`.
+task must name each task with `run_headers()` or an explicit `rbtrace.client.run()`
+scope, or every task shares one `x-rb-run`. The dashboard does not read `x-rb-seq`.
 A later full-agent training workflow also requires `x-rb-snapshot-id` naming a
 real repeatable starting state. Ordinary capture does not require that snapshot.
 

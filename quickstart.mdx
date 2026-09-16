@@ -29,11 +29,11 @@ connecting your client and retaining a run ID across all calls in one task. A
 run is all the model calls in one task, labelled with one `x-rb-run` header.
 
 <Note>
-The setup CLI is a **release preview** requiring `rbtrace==1.1.0`.
-Public `rbtrace==1.0.0` does not include it. Use a preview build supplied by
-ReasonBlocks or wait for the release before running those commands. The
-plain-text page at `/agent-setup.md` resolves once this documentation release
-is published.
+The setup CLI and helper are published on PyPI as `rbtrace==1.1.1`. This version
+adds automatic run labelling when the generated helper is imported. If a project
+already has a generated `1.1.0` connection, `python -m rbtrace migrate` upgrades
+its helper in place, keeping the source URL and backing up the original files; see
+[Migrate an older generated connection](/agent-setup#migrate-an-older-generated-connection).
 </Note>
 
 ## 3. Verify capture

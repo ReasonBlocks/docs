@@ -7,8 +7,8 @@ The current connection uses a source URL from **Data** and explicit request
 headers. Your existing provider SDK—the OpenAI or Anthropic Python client
 library—continues making calls and your application continues executing tools.
 
-Use [Set up with your coding agent](/agent-setup) to generate the helper. It is a
-release preview requiring `rbtrace==1.1.0`; public `1.0.0` has no setup CLI.
+Use [Set up with your coding agent](/agent-setup) to generate the helper. The CLI
+and helper ship in `rbtrace==1.1.1` on PyPI.
 
 ## Client construction
 
@@ -22,9 +22,17 @@ client = OpenAI(**reasonblocks_setup.client_kwargs())
 ```
 
 Use `Anthropic` from the `anthropic` package for an Anthropic source.
-`AsyncOpenAI` and `AsyncAnthropic` accept the same settings. Preserve your existing
-model, timeout, retry and other application settings. Merge existing headers
-without overwriting `x-reasonblocks-key`.
+`AsyncOpenAI` and `AsyncAnthropic` accept the same settings. The returned
+dictionary contains `base_url`, `default_headers` with `x-reasonblocks-key`, and
+`max_retries=0`. Preserve your existing model, timeout and other application
+settings, and merge existing headers without overwriting `x-reasonblocks-key`.
+
+Automatic SDK retries are disabled on purpose. A timeout can leave paid work with
+an unknown outcome, because the provider may already have accepted the request;
+an SDK that silently retries would repeat it. Reconcile that outcome before
+retrying. If your application has its own reconciliation policy, override
+`max_retries` explicitly in the returned dictionary rather than adding a retry
+loop around the call.
 
 For installed packages, generate the helper inside the importable package and
 include its adjacent `.reasonblocks/config.json` in deployment files. Follow the
@@ -40,8 +48,17 @@ The dashboard groups a task's calls by `x-rb-run`; that group is the unit
 full-agent training works on, together with `x-rb-snapshot-id` when you supply
 one. The sequence number is carried on every call and is what self-hosted gateway
 reconstruction uses to prove a run complete; the dashboard does not read it and
-groups solely by `x-rb-run`. `RBTRACE_DISABLE=1` turns the labelling off without
-removing the import.
+groups solely by `x-rb-run`. Importing the helper sends no requests.
+`RBTRACE_DISABLE=1` turns the labelling off without removing the import;
+`doctor` reports that condition.
+
+Labelling applies only to allowlisted hosts. The helper adds your configured
+capture hostname to the allowlist itself, so ordinary setups need no host
+configuration. If you also set `RBTRACE_HOSTS`, a plain hostname such as
+`capture.example.com` matches only that exact host; a leading-dot entry such as
+`.example.com` matches its subdomains. Use `example.com,.example.com` when you
+intentionally need both the domain and its subdomains. `RBTRACE_HOSTS=*` labels
+every host.
 
 Whether you must name tasks depends on the process shape:
 
@@ -78,6 +95,10 @@ has a suitable ID: 1–128 letters, numbers, underscores, periods, colons or hyp
 The sequence number is still added automatically, keyed by the run ID you passed.
 Header names are case-insensitive; `X-RB-Run` and `x-rb-run` are the same header.
 
+An existing `with rbtrace.client.run():` scope around each complete task also
+names the task and can stay in place. Without task headers or scopes, unscoped
+calls share one process-wide run.
+
 Keep the full conversation, policy, tool definitions and actual tool results in
 each request. Add the returned assistant message and tool results before the next
 call, as required by your existing agent loop.
@@ -99,9 +120,10 @@ adapter and evaluator requirements.
 ## Verify the real application
 
 Run `python -m rbtrace doctor --path . --json` using your application environment
-and the directory chosen at initialization. It checks local configuration, SDK
-availability and capture-key presence without network calls. It does not prove
-authentication or successful capture.
+and the directory chosen at initialization. It checks local configuration, the
+Python version, SDK availability, whether the selected SDK's HTTP transport can
+be labelled, capture-key presence and the task-header contract, all without
+network calls. It does not prove authentication or successful capture.
 
 Test the actual launch command from outside the repository directory, and verify
 that the deployed helper and config are present. When running a real workflow is
@@ -113,5 +135,6 @@ child process may make its model calls there; the Python helper does not
 instrument that process. Integrate at the real request boundary and use the
 [current endpoint contract](/endpoint-compatibility).
 
-For an older generated gateway connection, follow
+For an older generated gateway connection, or a generated `1.1.0` connection that
+predates automatic labelling, follow
 [the migration procedure](/agent-setup#migrate-an-older-generated-connection).

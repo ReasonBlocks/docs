@@ -14,9 +14,9 @@ Deploy the generated `reasonblocks_setup.py` and its adjacent
 directory explicitly in wheel package data or image copy rules. The generated
 `.reasonblocks/SETUP.md` is optional at runtime.
 
-Install `rbtrace` into the application's Python environment and record the
-version in its dependency manifest. The CLI and helper are a release preview
-requiring `rbtrace==1.1.0`; public `1.0.0` does not contain them.
+Install `rbtrace==1.1.1` from PyPI into the application's Python environment
+and record the version in its dependency manifest. That release contains the
+CLI and the helper's automatic run labelling.
 
 Use an importable helper location appropriate to your package. Verify the real
 entrypoint from a working directory outside the repository. See

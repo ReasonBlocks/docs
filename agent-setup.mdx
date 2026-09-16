@@ -15,12 +15,11 @@ a small **Python integration helper** that connects your existing client; and an
 Python client library—the provider's SDK—continues making model requests.
 
 <Note>
-**Availability:** the CLI and helper require `rbtrace==1.1.0`. Public PyPI
-currently has `1.0.0`, which does not include these commands. Use a 1.1.0 preview
-build supplied by ReasonBlocks, or wait for its release before running the
-installation examples. The plain-text copy of this page at `/agent-setup.md` and
-the hosted skill (`npx skills add https://docs.reasonblocks.com`) resolve once
-this documentation release is published.
+The CLI and helper are available on PyPI in `rbtrace==1.1.1`. This version adds
+automatic run labelling when you import the generated helper. If you already use
+a generated `1.1.0` connection, follow
+[Migrate an older generated connection](#migrate-an-older-generated-connection)
+to update it while preserving a backup of the original files.
 </Note>
 
 ## What you need
@@ -43,13 +42,13 @@ rotating a key invalidates the previous one.
 Use your project's package manager. For uv:
 
 ```bash
-uv add rbtrace==1.1.0
+uv add rbtrace==1.1.1
 ```
 
 For a pip-managed environment:
 
 ```bash
-python -m pip install rbtrace==1.1.0
+python -m pip install rbtrace==1.1.1
 ```
 
 Record the dependency in the existing manifest or requirements file. Use the
@@ -122,13 +121,28 @@ client = OpenAI(**reasonblocks_setup.client_kwargs())
 
 Async clients accept the same settings. Preserve the application's other client
 settings and merge existing headers without replacing the capture headers.
-The helper supplies the source base URL and the `x-reasonblocks-key` header, and —
-because importing it installs run labelling for the process — every model call made
-through the client carries `x-rb-run` and `x-rb-seq`. The dashboard groups a
+The helper supplies the source base URL, the `x-reasonblocks-key` header and
+`max_retries=0`. Automatic SDK retries are disabled because a timeout can leave
+paid work with an unknown outcome: the provider may already have accepted the
+request. Reconcile that outcome before retrying. If your application has chosen
+its own retry policy, override `max_retries` explicitly in the returned dictionary
+rather than adding a retry loop.
+
+Importing the helper installs run labelling for the process, so every model call
+made through the client carries `x-rb-run` and `x-rb-seq`. The dashboard groups a
 task's calls by `x-rb-run` and uses `x-rb-snapshot-id` for full-agent training.
 The sequence number is carried on every call; self-hosted gateway reconstruction
 uses it to prove a run complete. The dashboard does not read it — it groups solely
-by `x-rb-run`.
+by `x-rb-run`. Importing the helper sends no requests, reads no request bodies and
+changes no credentials. Set `RBTRACE_DISABLE=1` before startup to turn labelling
+off; `doctor` reports that condition.
+
+Labelling applies only to allowlisted hosts, and the helper adds your configured
+capture hostname to the allowlist itself. If you also set `RBTRACE_HOSTS`, a plain
+hostname such as `capture.example.com` matches only that exact host; a leading-dot
+entry such as `.example.com` matches its subdomains. Use
+`example.com,.example.com` when you intentionally need both the domain and its
+subdomains. `RBTRACE_HOSTS=*` labels every host.
 
 Whether you must name tasks depends on the process:
 
@@ -164,8 +178,9 @@ and tool results. Create fresh headers for the next task; queue workers and
 concurrent jobs must each retain their own headers. If your application already
 has a task ID, pass `run_id=existing_task_id` to `run_headers()`.
 
-The helper uses explicit client settings. Your application continues executing
-its tools.
+An existing `with rbtrace.client.run():` scope around each complete task can
+supply the boundary instead. Without task headers or scopes, unscoped calls share
+one process-wide run. Your application continues executing its tools.
 
 ## 4. Check the setup
 
@@ -178,10 +193,12 @@ python -m rbtrace doctor --path . --json
 For uv, use `uv run python -m rbtrace doctor --path . --json`. Use the same
 `--path` chosen for initialization, such as `src/my_agent`.
 
-The check inspects local configuration, SDK availability and capture-key
-presence. It makes no network calls. It does not check provider credentials,
-validate the capture key with the service or prove that your calls reached **Data**.
-Run relevant local tests for the integration and test the actual application entrypoint.
+The check inspects local configuration, the Python version, SDK availability,
+whether the selected SDK's HTTP transport can be labelled, capture-key presence
+and the task-header contract. It makes no network calls. It does not check
+provider credentials, validate the capture key with the service or prove that
+your calls reached **Data**. Run relevant local tests for the integration and
+test the actual application entrypoint.
 
 When you run a real workflow, normal provider fees apply and the service receives
 its requests for capture. Confirm the source records in **Data** before treating
@@ -189,8 +206,11 @@ the connection as verified end to end.
 
 ## Migrate an older generated connection
 
-If a previous setup generated a gateway configuration, first create a dashboard
-data source and obtain its actual capture URL and key. Then run:
+To upgrade an unmodified generated `1.1.0` connection, keep its existing source
+URL and capture key: pass the same URL to `--capture-url` and leave
+`REASONBLOCKS_CAPTURE_KEY` as it is. If a previous setup generated a gateway
+configuration, first create a dashboard data source and obtain its actual capture
+URL and key. Then run:
 
 ```bash
 python -m rbtrace migrate \
@@ -199,20 +219,25 @@ python -m rbtrace migrate \
 ```
 
 Use `--provider openai` for an OpenAI source, and the directory containing the old
-generated files for `--path`. Add `--dry-run` to preview. Migration backs up the
-old generated files before writing the current connection. It refuses to replace
-a customized helper; your coding agent must inspect and merge those changes.
+generated files for `--path`. Add `--dry-run` to preview. Migration copies the
+original generated files to `.reasonblocks/backups/<id>/` before writing the
+current helper and `SETUP.md`; for a `1.1.0` connection with the same URL and
+provider, `.reasonblocks/config.json` is reported unchanged. Repeating a completed
+migration changes nothing. It refuses to replace a customized helper; your coding
+agent must inspect and merge those changes.
 
-Update application code to construct the client with `client_kwargs()`. The
-generated helper performs `install()` itself when imported, so remove any manual
-`rbtrace.client.install()` call you added earlier (a second call is a harmless
-no-op); an old `shim.run()` / `shim.new_run()` scope can stay or become
-`run_headers()` — both still name a task. Remove the old gateway base-URL setting
-from deployment configuration. Restart the affected clients and processes;
-changing a config file does not reroute an already-constructed client.
-The migration command changes generated files; it does not edit
-arbitrary application code or create dashboard credentials. Re-run `doctor` and
-the actual entrypoint after the code changes.
+Update application code to construct the client with `client_kwargs()`.
+Importing the generated helper installs labelling, so remove obsolete
+`reasonblocks_setup.install()` calls left from an old gateway helper; a separate
+`rbtrace.client.install()` call is no longer needed either (a second call is a
+harmless no-op). Keep an existing explicit `rbtrace.client.run()` scope around
+each task, or use fresh `run_headers()` per task — both name a task, and a process
+that runs many tasks needs one of them at every task boundary. Remove the old
+gateway base-URL setting from deployment configuration. Restart the affected
+clients and processes; changing a config file does not reroute an
+already-constructed client. The migration command changes generated files; it
+does not edit arbitrary application code or create dashboard credentials. Re-run
+`doctor` and the actual entrypoint after the code changes.
 
 Migrate only a compatible OpenAI Chat Completions or Anthropic Messages client.
 Do not switch a Fireworks, Bedrock, Gemini or Responses application to a different
@@ -248,7 +273,7 @@ training results and application tests through those stages.
 
 ## Install the reusable agent skill
 
-Once this documentation release is published (see the availability note above):
+Install the reusable setup instructions:
 
 ```bash
 npx skills add https://docs.reasonblocks.com

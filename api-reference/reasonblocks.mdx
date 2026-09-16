@@ -4,8 +4,9 @@ description: "Source URLs, environment variables and the Python helper used by t
 ---
 
 This reference covers the dashboard capture connection. For installation, use
-[Set up with your coding agent](/agent-setup). The CLI and helper require the
-`rbtrace==1.1.0` release preview; public `1.0.0` does not include them.
+[Set up with your coding agent](/agent-setup). The CLI and helper ship in
+`rbtrace==1.1.1` on PyPI; `1.1.1` adds automatic run labelling on import and the
+`migrate` upgrade path for generated `1.1.0` connections.
 
 ## Source configuration
 
@@ -22,20 +23,28 @@ for the two supported provider paths.
 | `RB_CAPTURE_KEY` | Existing alias; if both names are set, their values must agree |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Your normal provider credential, read by the provider client as before |
 | `REASONBLOCKS_CAPTURE_URL` | Shell variable used in the setup examples to pass the exact source URL to the CLI |
+| `RBTRACE_DISABLE` | `1` turns run labelling off at startup; `doctor` reports that condition |
+| `RBTRACE_HOSTS` | Optional extra hosts to label, comma-separated. A plain hostname matches only that exact host; a leading-dot entry such as `.example.com` matches its subdomains; `*` matches every host. The helper adds the configured capture hostname itself |
 
 Keys do not belong in generated files or CLI arguments. Capture keys expire
 after seven days, and rotation invalidates the previous key.
 
 ## `client_kwargs()`
 
-Returns client settings containing the configured `base_url` and
-`default_headers` with `x-reasonblocks-key`. Pass them to the existing OpenAI or
-Anthropic Python client constructor. Async clients accept the same settings.
+Returns client settings containing the configured `base_url`, `default_headers`
+with `x-reasonblocks-key`, and `max_retries=0`. Pass them to the existing OpenAI
+or Anthropic Python client constructor. Async clients accept the same settings.
 Preserve other application settings and merge headers deliberately.
 
 ```python
 client = OpenAI(**reasonblocks_setup.client_kwargs())
 ```
+
+`max_retries=0` disables the SDK's automatic retries. A timeout can leave paid
+work with an unknown outcome, because the provider may already have accepted the
+request; a silent retry would repeat it. Reconcile that outcome before retrying.
+An application with its own reconciliation policy can override `max_retries`
+explicitly in the returned dictionary.
 
 ## Run labelling (automatic)
 
@@ -46,12 +55,14 @@ within the task). The dashboard groups a task's calls by `x-rb-run` and, with
 carried on every call; self-hosted gateway reconstruction uses it to prove a run
 complete, while the dashboard ignores it and groups solely by `x-rb-run`. The labelling
 patches only the HTTP transport the SDK uses, reads no bodies and sends nothing of its
-own. `RBTRACE_DISABLE=1` turns it off; `python -m rbtrace doctor` reports whether calls
+own. It applies to allowlisted hosts; the helper adds the configured capture hostname
+to the allowlist, and `RBTRACE_HOSTS` extends it as described above.
+`RBTRACE_DISABLE=1` turns it off; `python -m rbtrace doctor` reports whether calls
 from an environment will be labelled.
 
 Without a named task the helper uses one process-wide run ID. That is correct for a
 process that handles exactly one task; any process that handles more than one task
-must name each task with `run_headers()`.
+must name each task with `run_headers()` or an explicit `rbtrace.client.run()` scope.
 
 ## `run_headers(snapshot_id=None, run_id=None)`
 
@@ -78,11 +89,15 @@ not reset tools or create snapshots.
 
 ## CLI checks and migration
 
-`python -m rbtrace doctor --path . --json` inspects local configuration, SDK
-availability and capture-key presence. It makes no network calls and does not
-validate provider credentials or prove capture delivery. Use the helper's actual
-directory for `--path`.
+`python -m rbtrace doctor --path . --json` inspects local configuration, the Python
+version, SDK availability, whether the selected SDK's HTTP transport can be
+labelled, capture-key presence and the task-header contract. It makes no network
+calls and does not validate provider credentials or prove capture delivery. Use
+the helper's actual directory for `--path`.
 
-`python -m rbtrace migrate` converts an older generated connection when given a
-real dashboard capture URL. See [migration](/agent-setup#migrate-an-older-generated-connection)
-for backup behavior, customized helpers and the required application changes.
+`python -m rbtrace migrate` converts an older generated gateway connection when
+given a real dashboard capture URL, and upgrades an unmodified generated `1.1.0`
+connection to the `1.1.1` helper when given its existing URL. It backs up the
+original files under `.reasonblocks/backups/` first. See
+[migration](/agent-setup#migrate-an-older-generated-connection) for backup
+behavior, customized helpers and the required application changes.
