@@ -94,7 +94,9 @@ beside it with `import reasonblocks_setup`; it may not find one at the repositor
 root. Follow the actual application layout instead of adding a `sys.path` workaround.
 
 Ship `reasonblocks_setup.py` and its adjacent `.reasonblocks/config.json` with
-the application. Include the hidden config directory explicitly in wheel package
+the application, as described in
+[Deploy your connected application](/deployment). Include the hidden config
+directory explicitly in wheel package
 data or the deployed image; `.reasonblocks/SETUP.md` is optional in deployments.
 Test the real entrypoint from outside the repository directory to verify imports
 and config lookup.
