@@ -1,247 +1,95 @@
 ---
 title: "Integrating your agent"
-description: "Send LLM traffic through the hosted gateway and add two lines of run labeling, so your traces are distillation-ready."
+description: "Connect your existing OpenAI or Anthropic Python client to dashboard capture and keep each task's calls grouped together."
 ---
 
-Every ReasonBlocks setup has two required pieces: agent LLM traffic goes through a **hosted
-capture gateway**, and the two-line **`rbtrace` shim** labels run boundaries on outbound
-requests. Nothing changes inside your LLM SDK or agent framework.
+The current connection uses a source URL from **Data** and explicit request
+headers. Your existing provider SDK—the OpenAI or Anthropic Python client
+library—continues making calls and your application continues executing tools.
 
-This page walks through both steps, then the one decision you are left with: whether the shim
-is installed once per process, or scoped per job.
+Use [Set up with your coding agent](/agent-setup) to generate the helper. It is a
+release preview requiring `rbtrace==1.1.0`; public `1.0.0` has no setup CLI.
 
-## Step 1 — Point your agent at the gateway
+## Client construction
 
-Take the gateway URL we issued you and add the prefix for your provider:
-
-```bash
-export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com/anthropic"
-```
-
-Your agent keeps using its normal stack — Anthropic SDK, LangChain, CrewAI, or any client that
-respects `ANTHROPIC_BASE_URL`. ReasonBlocks records each exchange and forwards to your upstream
-provider. Your API key passes through and is never stored.
-
-One gateway URL serves every provider; only the prefix and the SDK's base-URL setting change:
-
-| Provider | Base URL to set |
-| --- | --- |
-| Anthropic | `ANTHROPIC_BASE_URL=.../anthropic` |
-| OpenAI (Chat Completions, Responses, Agents SDK) | `OPENAI_BASE_URL=.../openai/v1` |
-| Gemini (google-genai) | `HttpOptions(base_url=".../gemini")` or `GOOGLE_GEMINI_BASE_URL=.../gemini` |
-| AWS Bedrock (boto3, `AnthropicBedrock`) | `endpoint_url=".../bedrock/<region>"` / `ANTHROPIC_BEDROCK_BASE_URL=.../bedrock/<region>` |
-| Fireworks and other OpenAI-compatible hosts | `OPENAI_BASE_URL=.../fireworks/inference/v1` |
-
-Anthropic, OpenAI, Gemini, Fireworks and AWS Bedrock are each verified live through this
-setup — a complete run captured through the gateway, in both routing modes. Per-path detail is
-on [Endpoint compatibility](/endpoint-compatibility#aws-bedrock-bedrock-region); Bedrock's
-proven auth mode is the bearer token (`AWS_BEARER_TOKEN_BEDROCK`), not SigV4.
-
-Per-provider quickstarts, and what each path gets, are on
-[Endpoint compatibility](/endpoint-compatibility).
-
-With only this env var, the gateway **captures all traffic** it sees, and run grouping is
-inferred from request patterns (prefix pairing, tool ids, thread starts). That is enough for
-audit logs. It is not enough for training — which is why step 2 is part of
-the integration rather than an add-on.
-
-## Step 2 — Add the run-labeling shim
-
-Distillation reads `rb_trace_v1` and prefers runs where `provenance.supports_universal_claims`
-is true — shown as **golden** in the [Quickstart](/quickstart) flow. Golden runs need
-**proven** boundaries: a complete step sequence per logical job, not inferred merges.
-
-Inference alone is conservative. Multi-agent crews, repeated similar prompts, and long-lived
-workers often produce runs marked **not minable** rather than guessed wrong. That is safe for
-capture, but low yield for automated training: with run labels roughly **95%** of runs are
-provably minable, without them about **7%**. Both numbers are equally trustworthy — nothing is
-ever marked minable when it is not — so what inference costs you is volume, not correctness.
-
-```bash
-pip install rbtrace
-```
+The helper supplies the exact source URL and capture authentication header:
 
 ```python
-import rbtrace.client as shim; shim.install()
+from openai import OpenAI
+import reasonblocks_setup
+
+client = OpenAI(**reasonblocks_setup.client_kwargs())
 ```
 
-Add those two lines at process startup, before your agent makes its first LLM call. The shim
-stamps two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on outbound LLM API calls and does nothing
-else — no other changes to your agent code.
+Use `Anthropic` from the `anthropic` package for an Anthropic source.
+`AsyncOpenAI` and `AsyncAnthropic` accept the same settings. Preserve your existing
+model, timeout, retry and other application settings. Merge existing headers
+without overwriting `x-reasonblocks-key`.
 
-It works at the HTTP-transport level and patches four transports: `httpx` and `httpx2` (the
-Anthropic and OpenAI Python SDKs), `aiohttp` (google-genai's async client) and `botocore`
-(boto3, which sends through `urllib3` and so gets an event hook rather than a patched client).
-`install()` covers all four.
+For installed packages, generate the helper inside the importable package and
+include its adjacent `.reasonblocks/config.json` in deployment files. Follow the
+[helper location guide](/agent-setup#choose-an-importable-helper-location) instead
+of changing `sys.path`.
 
-Those four carry the Python SDKs for Anthropic, OpenAI, Gemini (google-genai), AWS Bedrock
-(boto3) and every OpenAI-compatible host (Fireworks, vLLM, DeepSeek, Groq, OpenRouter, ...),
-plus the frameworks built on them — LangChain, LangGraph, CrewAI, the OpenAI Agents SDK, the
-Claude Agent SDK and LiteLLM. If your client is one of those, the shim is part of the
-integration; there is no supported configuration in which you point at the gateway and skip it.
+## One run ID per task
 
-<Note>
-Required is not the same as sufficient. Run labels prove where a run starts and ends; a golden
-run also needs the capture of every step in it to be complete, and it still has to survive the
-corroboration pass. The shim removes the boundary problem, not the other two.
-</Note>
-
-`install()` already covers boto3: it registers botocore's `before-send` hook for every session
-botocore builds from that point on. It cannot reach a boto3 session or client you constructed
-**earlier** in the process — there is no global registry to reach — so if your Bedrock client
-is built before `install()` runs, add one line for it:
+Create headers once at the task boundary:
 
 ```python
-import rbtrace.client
-rbtrace.client.install()
-rbtrace.client.install_botocore(bedrock_client)   # only for clients built before install()
+headers = reasonblocks_setup.run_headers()
 ```
 
-Calling `install_botocore()` with no argument covers boto3's default session if one already
-exists. It is idempotent, so it is safe to call defensively.
-
-`rbtrace.client.installed_transports()` reports what was actually patched (`httpx`, `httpx2`,
-`aiohttp`, `botocore`); asserting it in a start-up check catches a silently unlabelled agent
-before it has produced a week of unminable runs. `install()` also warns by name when
-google-genai + `aiohttp`, or boto3, are installed but their transport was not patched.
-
-## The one remaining choice: run scope
-
-With the gateway and the shim in place, all that is left is whether one `install()` covers the
-process, or each job needs its own run boundary.
-
-| Scope | What you add | Fits |
-| --- | --- | --- |
-| **`install()` once** | Env var + `rbtrace.client.install()` at startup | One logical job per process, then exit or idle |
-| **`install()` + `run()` per job** | The above + `with rbtrace.client.run():` around each job | Queue workers, batch loops, thread pools |
-
-### Decision guide
-
-```
-Can the shim reach your client's transport?
-(httpx, httpx2, aiohttp, botocore — the Anthropic, OpenAI, google-genai and boto3
- Python SDKs, every OpenAI-compatible host, and the frameworks built on them)
-│
-├─ NO  → Capture still works; proven run boundaries do not. Move the client onto a
-│        supported SDK rather than accept the gap.
-│
-└─ YES → install() is required. Does one process handle exactly one logical job,
-         then stop or idle?
-         │
-         ├─ YES → install() at startup is enough
-         │
-         └─ NO  → install() + with rbtrace.client.run() per job
-```
-
----
-
-## `install()` at startup
-
-The two lines from step 2, and nothing more:
+Pass them on every model call in the task:
 
 ```python
-import rbtrace.client
-rbtrace.client.install()
+response = client.chat.completions.create(
+    model=model,
+    messages=messages,
+    tools=tools,
+    extra_headers=headers,
+)
 ```
 
-### This is enough when
+For Anthropic, pass `extra_headers=headers` to `client.messages.create(...)`.
+Reuse the headers through the whole task, including after tool execution. A new
+task gets new headers. Keep them in task-local state for concurrent jobs and
+long-lived workers. Pass `run_id=existing_task_id` if your application already
+has a suitable ID: 1–128 letters, numbers, underscores, periods, colons or hyphens.
 
-- The process runs **one logical job** from start to exit:
-  - one CrewAI `kickoff()` then exit,
-  - one API request → one agent invocation → done,
-  - one long conversational session (single user thread).
-- You use async multi-agent frameworks (e.g. CrewAI manager + role agents) and want one trace for the whole crew. Sub-agents inherit the same run id automatically.
+Keep the full conversation, policy, tool definitions and actual tool results in
+each request. Add the returned assistant message and tool results before the next
+call, as required by your existing agent loop.
 
-### Add `run()` per job when
+## Snapshots for later training
 
-- A single Python process loops over many unrelated tasks (`for task in tasks:`). Every task would share the first run id and traces merge.
-- Workers use `threading.Thread` for parallel jobs. Each thread gets its own run id, not one per task — so wrap the thread body in `run()` (or use one process per job).
-
-### What you get
-
-- Proven run boundaries and step order on the header path.
-- High minable yield on hard shapes (multi-agent, delegation) compared to inferred grouping.
-
----
-
-## `install()` + `run()` per job
-
-Same gateway and startup, plus one context manager per logical job:
+Ordinary capture needs no snapshot or sandbox. When preparing full-agent
+training, connect a test copy of the real tools and data that resets before each
+task. Then attach its actual starting snapshot:
 
 ```python
-import rbtrace.client
-rbtrace.client.install()
-
-for task in tasks:
-    with rbtrace.client.run():
-        crew.kickoff(inputs=task)   # or agent.run(task), etc.
+headers = reasonblocks_setup.run_headers(snapshot_id=starting_snapshot_id)
 ```
 
-Async:
+Keep the same snapshot and run IDs throughout the task. The helper does not create
+that test state. See [Train your complete agent](/full-agent-training) for the
+adapter and evaluator requirements.
 
-```python
-async for task in tasks:
-    with rbtrace.client.run():
-        await agent.run(task)
-```
+## Verify the real application
 
-### Choose this when
+Run `python -m rbtrace doctor --path . --json` using your application environment
+and the directory chosen at initialization. It checks local configuration, SDK
+availability and capture-key presence without network calls. It does not prove
+authentication or successful capture.
 
-- One long-lived process handles many jobs (batch queue, worker pool, cron loop).
-- Each job must be a separate run with proven completeness.
-- You delegate work to OS threads and need one run id per task (wrap the thread body in `with rbtrace.client.run():`).
-- `install()` alone would merge distinct jobs into one trace, which breaks downstream mining.
+Test the actual launch command from outside the repository directory, and verify
+that the deployed helper and config are present. When running a real workflow is
+within your intended scope, confirm its records in **Data**. Normal provider fees
+apply.
 
-### What you get
+The helper runs inside Python. A framework that launches a JavaScript or native
+child process may make its model calls there; the Python helper does not
+instrument that process. Integrate at the real request boundary and use the
+[current endpoint contract](/endpoint-compatibility).
 
-- Everything `install()` gives you, with a fresh run id per `with` block.
-- Safe batch and worker-pool deployments without "super-run" merges.
-
-One extra line per job loop (or per thread entrypoint). Still no changes inside the LLM SDK or framework.
-
-## Common deployment patterns
-
-Gateway URL and `install()` are assumed everywhere below; the column says what else, if
-anything, the shape needs.
-
-| Deployment pattern | What it needs |
-| --- | --- |
-| Agent on your infra, gateway hosted by ReasonBlocks | Gateway URL + `install()`; add `run()` if one process handles many jobs |
-| Docker: one container invocation per user request | `install()` |
-| Kubernetes Job: one task per pod | `install()` |
-| Long-running worker draining a queue | `install()` + `run()` per job |
-| `for contract in contracts: crew.kickoff(...)` in one script | `install()` + `run()` per job |
-| CrewAI single `kickoff` in a fresh process | `install()` |
-| Agent that talks to two providers (say Anthropic and Fireworks) | Same gateway, one prefix each; `install()` covers both, plus `run()` as above |
-| Distillation consuming only `supports_universal_claims: true` | `install()`, plus `run()` per job in any multi-job process |
-
-## Kill switches
-
-| Goal | Action |
-| --- | --- |
-| Bypass capture | Unset the base-URL variable for your provider (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, ...) so the agent talks to the provider directly. |
-| Turn the shim off without removing it | `RBTRACE_DISABLE=1`. An escape hatch for an incident, not a mode to run in: capture continues, but for as long as it is set the agent degrades to gateway-only inferred grouping and its runs are largely not minable. |
-
-## What the shim does not do
-
-- Parse or log prompts in-process beyond adding two HTTP headers.
-- Replace the gateway — traffic must still go through the gateway base URL.
-- Label calls from TypeScript or other non-Python SDKs, or from a Python HTTP library it does
-  not patch (`httpx`, `httpx2`, `aiohttp` and `botocore` are covered). Those requests are still
-  captured and fall back to inferred grouping.
-- Label non-step calls (token counting, batches, embeddings, model listing) — on purpose, so a
-  run's sequence stays contiguous.
-
-## Next steps
-
-<CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/quickstart">
-    End-to-end: capture → distill → serve.
-  </Card>
-  <Card title="Deployment" icon="server" href="/deployment">
-    Hosted gateway, capture storage, and the distillation pipeline.
-  </Card>
-  <Card title="Endpoint compatibility" icon="network-wired" href="/endpoint-compatibility">
-    Anthropic, OpenAI, Gemini, Bedrock, Fireworks and other LLM paths.
-  </Card>
-</CardGroup>
+For an older generated gateway connection, follow
+[the migration procedure](/agent-setup#migrate-an-older-generated-connection).

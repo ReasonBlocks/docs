@@ -31,10 +31,12 @@
             "group": "Getting Started",
             "pages": [
               "introduction",
-              "full-agent-training",
               "quickstart",
+              "agent-setup",
+              "agent-workflow",
               "client-integration",
-              "deployment"
+              "deployment",
+              "full-agent-training"
             ]
           },
           {

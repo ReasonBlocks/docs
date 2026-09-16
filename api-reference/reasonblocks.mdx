@@ -1,159 +1,66 @@
 ---
-title: "Gateway integration reference"
-description: "Hosted capture gateway: environment variables, the required client shim, and protocol contract for agents using ReasonBlocks."
+title: "Capture integration reference"
+description: "Source URLs, environment variables and the Python helper used by the current ReasonBlocks dashboard connection."
 ---
 
-This is the default integration surface for ReasonBlocks: route agent traffic through your
-**hosted gateway**, capture workflow traces, and serve a cheaper task-specific model with
-frontier-model fallback through the same URL.
+This reference covers the dashboard capture connection. For installation, use
+[Set up with your coding agent](/agent-setup). The CLI and helper require the
+`rbtrace==1.1.0` release preview; public `1.0.0` does not include them.
 
-For the step-by-step flow, start with [Quickstart](/quickstart). The gateway base URL and the
-two-line shim are both required; the only choice left is whether `install()` alone covers the
-process or each job needs `run()` — see [Integrating your agent](/client-integration).
+## Source configuration
 
-## Gateway URL
+The CLI records the exact dashboard-issued capture URL and provider in
+`.reasonblocks/config.json` and generates an adjacent `reasonblocks_setup.py`.
+The application imports that helper. See [Endpoint compatibility](/endpoint-compatibility)
+for the two supported provider paths.
 
-Your tenant gateway URL, issued at onboarding:
+## Environment variables
 
-```bash
-export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
-```
-
-| Item | Detail |
+| Name | Purpose |
 | --- | --- |
-| Protocol | Anthropic Messages (`POST /v1/messages`) is the primary path. OpenAI and other LLM APIs are supported for capture. See [Endpoint compatibility](/endpoint-compatibility). |
-| API key | Your existing `ANTHROPIC_API_KEY`; passes through upstream, **never stored** |
-| Agent code | Unchanged except `ANTHROPIC_BASE_URL` and the two-line shim |
-| Failure mode | Byte-transparent, fail-open: if capture breaks, traffic still flows |
+| `REASONBLOCKS_CAPTURE_KEY` | Dashboard-issued source capture key, supplied at runtime |
+| `RB_CAPTURE_KEY` | Existing alias; if both names are set, their values must agree |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | Your normal provider credential, read by the provider client as before |
+| `REASONBLOCKS_CAPTURE_URL` | Shell variable used in the setup examples to pass the exact source URL to the CLI |
 
----
+Keys do not belong in generated files or CLI arguments. Capture keys expire
+after seven days, and rotation invalidates the previous key.
 
-## Agent environment variables
+## `client_kwargs()`
 
-### `ANTHROPIC_BASE_URL`
-
-**Required** for capture and serving.
-
-<ParamField path="ANTHROPIC_BASE_URL" type="string" required>
-  Your tenant's hosted gateway URL. Must be set **before** the agent process starts.
-  The same URL is kept after training, when your trained model goes live.
-</ParamField>
-
-```bash
-export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
-export ANTHROPIC_API_KEY="sk-ant-..."   # unchanged; passthrough only
-```
-
-### `ANTHROPIC_API_KEY`
-
-Your Anthropic API key. ReasonBlocks forwards it to upstream on each request. It is not
-persisted in capture storage.
-
-### `RBTRACE_DISABLE`
-
-**Escape hatch**, not a supported mode.
-
-<ParamField path="RBTRACE_DISABLE" type="string" default="unset">
-  Set to `1` to disable the client shim without removing code. Capture continues through the
-  gateway, but for as long as it is set the agent degrades to gateway-only passive inference and
-  its runs are largely not minable. See
-  [Integrating your agent — Kill switches](/client-integration#kill-switches).
-</ParamField>
-
----
-
-## Client shim (required)
-
-Install in the **agent** environment alongside the gateway base URL. It is required for every
-client whose HTTP transport it can patch — `httpx`, `httpx2`, `aiohttp` and `botocore`, which
-between them carry the Anthropic, OpenAI, google-genai and boto3 Python SDKs and the frameworks
-built on them. Without it, run boundaries are inferred rather than proven and most runs never
-become minable:
-
-```bash
-pip install rbtrace
-```
-
-<ParamField path="rbtrace.client.install()" type="function">
-  Call once at process startup. Stamps `X-RB-Run` and `X-RB-Seq` on outbound LLM HTTP
-  requests. Patches every transport it finds importable: `httpx` and `httpx2` (the Anthropic
-  and OpenAI Python SDKs), `aiohttp` (google-genai's async client) and `botocore` (boto3 —
-  which sends through `urllib3`, so it gets botocore's `before-send` event hook instead of a
-  patched client; the hook fires after SigV4 signing, so the headers stay outside the
-  signature). Returns `False` if it patched nothing, and warns by name when google-genai +
-  `aiohttp` or boto3 are installed but unpatched. Does not replace the gateway;
-  `ANTHROPIC_BASE_URL` must still point at ReasonBlocks.
-</ParamField>
-
-<ParamField path="rbtrace.client.install_botocore(session=None)" type="function">
-  Only needed for a boto3 client or session built **before** `install()` ran — `install()`
-  registers botocore's hook for every session built after it, and cannot reach one that
-  already exists. Accepts a boto3 client, a boto3 `Session`, a botocore `Session`, an event
-  emitter, or nothing for boto3's default session if one has been created. Returns whether it
-  registered; repeat calls are no-ops.
-</ParamField>
-
-<ParamField path="rbtrace.client.installed_transports()" type="function">
-  The transports actually patched, as a tuple. Worth asserting at start-up: an unpatched
-  transport looks exactly like a working one until the runs turn out not to be minable.
-</ParamField>
-
-<ParamField path="rbtrace.client.run()" type="context manager">
-  One fresh run id per `with` block. Needed whenever one process handles more than one logical
-  job — batch loops, worker pools, threaded workers — so distinct jobs do not merge into one
-  trace. A single-job process needs `install()` only.
-</ParamField>
+Returns client settings containing the configured `base_url` and
+`default_headers` with `x-reasonblocks-key`. Pass them to the existing OpenAI or
+Anthropic Python client constructor. Async clients accept the same settings.
+Preserve other application settings and merge headers deliberately.
 
 ```python
-import rbtrace.client
-
-rbtrace.client.install()
-
-for task in tasks:
-    with rbtrace.client.run():
-        run_agent(task)
+client = OpenAI(**reasonblocks_setup.client_kwargs())
 ```
 
-Full decision guide, and the clients the shim cannot reach:
-[Integrating your agent](/client-integration).
+## `run_headers(snapshot_id=None, run_id=None)`
 
----
+Returns headers for one task. If `run_id` is omitted, generates a new ID.
+Call once per task and reuse the result as `extra_headers` on every model call.
 
-## What the gateway captures
+```python
+headers = reasonblocks_setup.run_headers()
+```
 
-Each Anthropic Messages request/response pair that transits the gateway is written to hosted
-storage. ReasonBlocks reconstructs runs server-side and labels them:
-
-| Label | Meaning |
+| Header | Requirement |
 | --- | --- |
-| **golden** | Proven complete run; eligible for distillation (`supports_universal_claims: true`) |
-| **not** | Incomplete or violated; excluded from mining |
+| `x-rb-run` | One ID per task, retained through all its model calls |
+| `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture |
 
-The shim is what makes **golden** the common case rather than
-the exception; scoping `run()` per job is what keeps it that way in multi-job processes.
+IDs use 1–128 letters, numbers, underscores, periods, colons or hyphens. The helper
+attaches identifiers; it does not reset tools or create snapshots.
 
-For OpenAI Chat Completions, Responses API, Gemini, and other paths, see
-[Endpoint compatibility](/endpoint-compatibility).
+## CLI checks and migration
 
----
+`python -m rbtrace doctor --path . --json` inspects local configuration, SDK
+availability and capture-key presence. It makes no network calls and does not
+validate provider credentials or prove capture delivery. Use the helper's actual
+directory for `--path`.
 
-## Training and trained model serving (hosted)
-
-Training and serving your trained model run on ReasonBlocks infrastructure under your tenant.
-See [Quickstart](/quickstart) for the end-to-end flow.
-
-After training, serving uses the same `ANTHROPIC_BASE_URL` with a **flat** transcript contract
-(`render_flat`).
-
-| Who answers | Behavior |
-| --- | --- |
-| **Your trained model (primary)** | Task-specific model trained on your workflow handles the request |
-| **Frontier backup** | When coverage runs out or the step fails, the gateway uses your frontier model |
-| **Edge-case loop** | Backup episodes are captured and feed the next training cycle |
-
----
-
-## Other deployment models
-
-The hosted gateway is the supported path. For the gateway on your own infrastructure, on-prem
-serving, or another deployment model, [reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com).
+`python -m rbtrace migrate` converts an older generated connection when given a
+real dashboard capture URL. See [migration](/agent-setup#migrate-an-older-generated-connection)
+for backup behavior, customized helpers and the required application changes.

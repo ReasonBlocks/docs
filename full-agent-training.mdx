@@ -8,12 +8,20 @@ a smaller model, calibrates its guard, and compares complete tasks before you
 decide whether to send the release customer traffic.
 
 This guide covers **Full agent distillation** in the platform's **Training**
-page. It requires a deployment with the full-agent worker enabled. The older
-[gateway quickstart](/quickstart) and **Saved responses** workflow remain
-separate; their golden-run filtering and serving contracts do not describe this
-training method.
+page. It requires a deployment with the full-agent worker enabled. To connect
+your application and capture calls first, follow [Quickstart](/quickstart).
+Connecting and ordinary capture require no sandbox. The resettable environment
+and snapshot requirements below apply when preparing full-agent training.
+
+Your coding agent can help assess the data, review the plan and results, and test
+the candidate in your project. See [Work with your coding agent](/agent-workflow)
+for the evidence and decisions at each stage.
 
 ## 1. Connect your data
+
+Your coding agent can prepare the Python client integration using
+[the setup CLI and skill](/agent-setup). That guide includes release availability
+and the source credentials needed before setup.
 
 In **Data**, create a source and copy its capture URL and capture key. Keep your
 existing provider API key. Send the capture key in `x-reasonblocks-key`, alongside
@@ -22,9 +30,9 @@ your normal provider authentication. Use the exact URL returned for your source:
 - OpenAI Chat Completions: `/capture/SOURCE_ID/openai/v1` as the SDK base URL.
 - Anthropic Messages: `/capture/SOURCE_ID/anthropic` as the SDK base URL.
 
-Resolve these paths against your platform API's HTTPS origin. These are platform
-capture endpoints, not the legacy gateway's provider prefixes. Treat the capture
-key as a secret; it expires after seven days and can be rotated in **Data**.
+Resolve these paths against your platform API's HTTPS origin and use the exact
+URL returned for the source. Treat the capture key as a secret; it expires after
+seven days and can be rotated in **Data**.
 
 For every workflow execution, send:
 
@@ -43,6 +51,9 @@ next call; your application continues executing its tools.
 The snapshot ID refers to a repeatable starting state in your test environment.
 Freeze it before the workflow changes that state and keep it unchanged for the
 whole execution. Capture does not create the snapshot for you.
+Earlier captures without a restorable starting state are not automatically
+eligible for training. Collect tasks with real snapshots or curate replayable
+starting tasks for the environment.
 
 You can instead upload JSONL containing `id`, `group_id`, OpenAI-shaped text
 `messages`, function `tools`, and `metadata.environment_snapshot_id`. Use the
@@ -62,11 +73,18 @@ larger collection, upload curated initial-task JSONL instead; the upload limit i
 
 ## 2. Connect a test environment once
 
-Ask your administrator to register an isolated copy of your agent's tools and
-state. It appears in **Training** for your organization. For each attempt, it must
-restore the task's snapshot into a fresh disposable session, execute newly
-proposed tool actions, return their real results, and preserve state until the
-task ends. Training writes must stay inside this environment.
+A **sandbox** is a test copy of the real tools and data your agent uses, reset to
+a known starting state for each task. A support agent might use test tickets and
+test orders. It can be an existing test system; it does not inherently require
+a new server hosted by you.
+
+An adapter connects snapshot/reset operations, tool execution and an outcome
+evaluator. Your coding agent can help implement the adapter using your tool
+contracts, test-system access and definition of task success. An administrator
+registers the connection so it appears in **Training** for your organization.
+Each attempt restores its snapshot into a fresh disposable session, executes
+new tool actions, returns their real results and preserves state until the task
+ends. Training writes must stay inside this test environment.
 
 An independent outcome evaluator is also required. It may be your deterministic
 checker or an identified judge such as Fable. Judge assessments are reported as
@@ -125,8 +143,10 @@ method.
 
 The example $500 cap is not an estimate or a promise of completion. Choose your
 cap from the prepared estimate and your organization's allowed limit. Creating a
-run does not approve spending. `POST /api/pipelines/PIPELINE_ID/run` queues free
-preparation; review its checks and estimate in **Training** before approval.
+run with `data_source_id` snapshots the source and automatically queues free
+preparation; it does not approve spending. Review its checks and estimate in
+**Training** before approval. Do not call `/run` for this source-linked flow;
+that action is for eligible draft runs with an uploaded dataset.
 API approval uses `/approve-eval` with reviewed `criteria` and `notes`; it
 authorizes the paid baseline, training and evaluation stages together.
 

@@ -1,104 +1,54 @@
 ---
 title: "What is ReasonBlocks?"
-description: "Set one environment variable, capture your agent's workflow, and train a cheaper task-specific model on your own golden traces."
+description: "Connect your agent's model calls, collect workflow data and prepare a smaller model for your application."
 ---
 
-<Note>
-Using **Full agent distillation** in the platform dashboard? Start with
-[Train your complete agent](/full-agent-training) for the current setup and
-serving requirements. The golden-run workflow described below remains separate.
-</Note>
+ReasonBlocks captures the model calls in your agent's workflow and uses your
+application's tasks to train and evaluate a smaller model. You connect through
+a data source in the dashboard, keep your provider credentials and continue using
+your existing OpenAI or Anthropic Python client library.
 
-ReasonBlocks captures how your production agent handles **its specific task**, then trains a
-**cheaper model** personalized to that workflow. Integration is one environment variable.
-ReasonBlocks hosts trace reconstruction, dataset mining, training, and the model itself once
-it's trained — served on **your** golden traces.
+## Start with capture
 
-## The problem
+Create a source in **Data**, copy its capture URL and key, and ask your coding
+agent to connect the project:
 
-Production agents run the biggest model on every step because nothing smaller can be
-trusted with the workflow. Most of what a mature agent does is deeply repetitive: the same
-tools, the same verify scripts, the same repair moves against the same gate failures. You
-pay frontier prices for behavior a task-specific model can learn from a few dozen recorded
-sessions of **that** agent doing **that** job.
+```text
+Read https://docs.reasonblocks.com/agent-setup.md and integrate ReasonBlocks into this project.
+```
 
-## How it works
+The [setup CLI and skill](/agent-setup) generate a small Python helper and project
+configuration. Your coding agent connects the helper to the existing client and
+labels each task's calls. The CLI is a release preview requiring `rbtrace==1.1.0`;
+see the setup guide for availability.
 
-<Steps>
-  <Step title="Route traffic through ReasonBlocks">
-    Set the gateway URL we issued you before running your agent:
+Capture does not require a sandbox or start training. Normal provider charges
+continue to apply when your application runs.
 
-    ```bash
-    export ANTHROPIC_BASE_URL="https://gateway.<your-tenant>.reasonblocks.com"
-    ```
+## Train when your application is ready
 
-    With `ANTHROPIC_BASE_URL` pointed at your hosted ReasonBlocks gateway, your agent speaks
-    its native protocol directly to ReasonBlocks. Your Anthropic API key passes through
-    untouched and is never stored. Every exchange is captured to hosted storage. The gateway
-    is byte-transparent and fail-open: if capture ever breaks, your traffic still flows.
+Full-agent training needs representative tasks and a test copy of your tools and
+data that can reset between attempts. Your coding agent can help build the adapter
+for that environment. ReasonBlocks then prepares a plan, trains within the approved
+budget and reports complete-task results for review.
 
-    OpenAI, Gemini, AWS Bedrock, and other OpenAI-compatible hosts work the same way through
-    the same gateway with their own prefix — see [Endpoint compatibility](/endpoint-compatibility)
-    for the full list and what each one gets you.
-
-    Add the client shim in the same step, before your agent's first LLM call:
-
-    ```python
-    import rbtrace.client as shim; shim.install()
-    ```
-
-    Two lines, and nothing else in your agent code changes. This is what makes a run
-    provably complete later, and what most of your training data depends on — see
-    [Integrating your agent](/client-integration).
-  </Step>
-  <Step title="Traces reconstruct themselves">
-    ReasonBlocks reconstructs raw traffic into verified runs on hosted storage: ordered steps,
-    tool calls paired to their results, and injected corrections identified structurally. Runs
-    are labeled **golden** (proven complete, no violations) or **not**. Only golden runs from
-    your workflow are eligible for training, and none of it requires a local database.
-  </Step>
-  <Step title="A cheaper task-specific model is trained">
-    Once there are enough golden traces from this task, the hosted pipeline mines
-    (state → action) pairs from the complete runs and fine-tunes a smaller model for your
-    tenant on **your** workflow. Training is opt-in and tenant-scoped.
-  </Step>
-  <Step title="Your trained model goes live">
-    The gateway serves your **trained model** through the same URL, with your frontier model
-    connected as backup. Which one answers is not a fixed confidence cutoff: a **classifier
-    trained on your tenant's own data** scores the run and escalates to the frontier model
-    before a consequential action when your model's answer should not be trusted. Escalated
-    episodes become training signal for the next cycle, so coverage widens over time. Same
-    `ANTHROPIC_BASE_URL`; your agent code unchanged. Your trained model is exclusively
-    yours — never shared with, or trained into, any other customer's model.
-  </Step>
-</Steps>
-
-## What makes it trustworthy
-
-- **Completeness is proven, not assumed.** A run with a hole in it is never mined. The
-  reconstruction layer proves each run was captured whole before the pipeline may quantify
-  over it.
-- **Actions are validated against your workflow.** Sampled steps must use known tools,
-  real helper scripts, and well-formed arguments from vocabulary mined from your own traces.
-- **Whole-action selection only.** Rejection sampling keeps or drops complete actions.
-  Nothing selects on partial steps, which avoids low-quality training pairs.
-- **Escalation is a trained decision, not a guess.** Whether to trust your model's answer or
-  escalate to your frontier model is decided by a classifier trained on your tenant's own
-  agreement data — not a fixed confidence threshold.
+Enabling a trained release is a separate decision. See
+[Train your complete agent](/full-agent-training) for the environment, evaluation
+and serving requirements.
 
 ## Get started
 
 <CardGroup cols={2}>
+  <Card title="Set up with your coding agent" icon="terminal" href="/agent-setup">
+    One instruction, a setup CLI and a reusable skill.
+  </Card>
   <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Gateway URL → env var → shim → capture → distill.
+    Create a data source and connect your existing application.
   </Card>
   <Card title="Integrating your agent" icon="plug" href="/client-integration">
-    The gateway env var plus the two-line shim.
+    Client settings, task headers and deployment checks.
   </Card>
-  <Card title="Endpoint compatibility" icon="network-wired" href="/endpoint-compatibility">
-    Anthropic, OpenAI, Gemini, and other LLM API paths.
-  </Card>
-  <Card title="Deployment" icon="server" href="/deployment">
-    Hosted gateway, capture storage, and the distillation pipeline.
+  <Card title="Train your complete agent" icon="flask" href="/full-agent-training">
+    Prepare a test environment, review training and evaluate a release.
   </Card>
 </CardGroup>

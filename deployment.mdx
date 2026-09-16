@@ -1,62 +1,54 @@
 ---
-title: "Deployment"
-description: "How ReasonBlocks is deployed for your tenant: hosted gateway, capture storage, and the distillation pipeline."
+title: "Deploy your connected application"
+description: "Ship the generated helper, connection configuration and runtime secrets with the Python application that makes model calls."
 ---
 
-## Hosted (default)
+Connect to the exact HTTPS source URL returned in **Data**. Your application
+keeps using its OpenAI or Anthropic Python client library and provider credential.
+See [Quickstart](/quickstart) to create the connection.
 
-ReasonBlocks operates the capture gateway, durable storage, trace reconstruction,
-distillation pipeline, and trained model serving for your tenant. Your trained model is served
-to you under license through the hosted gateway — you get inference against your model, not
-the weights to run or redistribute elsewhere.
+## Application files
 
-**What ReasonBlocks runs**
+Deploy the generated `reasonblocks_setup.py` and its adjacent
+`.reasonblocks/config.json` with the application. Include the hidden config
+directory explicitly in wheel package data or image copy rules. The generated
+`.reasonblocks/SETUP.md` is optional at runtime.
 
-- Hosted gateway at a tenant-specific URL, issued to you at onboarding
-- Capture storage and trace reconstruction
-- Distillation jobs, training reports, and serving your trained model (frontier as backup)
+Install `rbtrace` into the application's Python environment and record the
+version in its dependency manifest. The CLI and helper are a release preview
+requiring `rbtrace==1.1.0`; public `1.0.0` does not contain them.
 
-**What you configure**
+Use an importable helper location appropriate to your package. Verify the real
+entrypoint from a working directory outside the repository. See
+[helper placement](/agent-setup#choose-an-importable-helper-location).
 
-| Item | Where |
-| --- | --- |
-| Gateway URL | Issued at onboarding; set it as `ANTHROPIC_BASE_URL` |
-| Anthropic API key | Your agent environment (passthrough; never stored by ReasonBlocks) |
-| Integration | [Integrating your agent](/client-integration): gateway base URL **and** the two-line `rbtrace` shim — both required |
-| Distillation | Opt-in, tenant-scoped |
-| Trained model serving | Your model primary, frontier backup on edge cases |
+## Runtime secrets
 
-Your agent process needs the gateway URL via `ANTHROPIC_BASE_URL`, your existing API key, and
-the two-line client shim. No DuckDB files, no locally run gateway, and no SSH access required
-for the default path.
+Supply `REASONBLOCKS_CAPTURE_KEY` through the deployment's secret environment.
+The existing `RB_CAPTURE_KEY` alias is accepted; if both names are set, their
+values must agree. Keep the provider credential in its normal secret location.
+Do not put either key in generated files or the image.
 
-Anthropic Messages is the primary path for training and the only path for trained model
-serving. OpenAI Chat Completions, Responses API, Gemini, Bedrock and other routes are supported
-for capture via the same gateway URL with the correct client env var. See
-[Endpoint compatibility](/endpoint-compatibility).
+The capture service receives model requests and the provider credential needed
+to forward them. Review the workflow content you send. Capture keys expire after
+seven days; rotating a key in **Data** invalidates the previous key, so update
+connected applications as part of that change.
 
-See the [Quickstart](/quickstart) for the end-to-end hosted flow.
+## Tasks and verification
 
-### Security and privacy
+Wire the helper into the process that makes the actual model calls. Create one
+run ID per task and reuse its headers for every step, including in workers that
+handle many tasks. See [Integrating your agent](/client-integration).
 
-- Anthropic API keys pass through the gateway to upstream and are **not stored** by ReasonBlocks.
-- Capture data and distillation artifacts stay in your tenant scope on ReasonBlocks infrastructure.
-- The agent shim only stamps two HTTP headers (`X-RB-Run`, `X-RB-Seq`) on recognised LLM API
-  paths; it reads no bodies, sends nothing of its own, and does not replace the hosted gateway.
+Run `doctor` in the deployed Python environment with the configured helper path.
+It is a local check, not a remote credential or capture test. Confirm source
+records after a real workflow before claiming the deployment is capturing correctly.
+Normal provider charges apply to those calls.
 
----
+## Training environment
 
-## Integration
-
-Where the gateway runs is separate from how you label runs in your agent process. Both pieces of
-the client integration are required: point the SDK's base URL at the gateway, and install the
-shim. See [Integrating your agent](/client-integration) for the one remaining choice —
-`install()` alone, or `install()` plus `with rbtrace.client.run():` per job — and for the clients
-whose transport the shim cannot reach.
-
----
-
-## On-prem and other deployment models
-
-Need the gateway run on your own infrastructure, on-prem model serving, or another deployment
-model? [Reach out](mailto:chetan@reasonblocks.com,sajeev@reasonblocks.com) and we will work out the right setup with you.
+Capturing calls does not require a sandbox. Full-agent training later needs a
+resettable test copy of your tools and data plus an outcome evaluator. The adapter
+can connect an existing test environment; this does not inherently require a
+new customer-hosted server. Follow [Train your complete agent](/full-agent-training)
+for the application-specific connection and release requirements.

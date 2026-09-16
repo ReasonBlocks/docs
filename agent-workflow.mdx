@@ -1,0 +1,159 @@
+---
+title: "Work with your coding agent"
+description: "Use your coding agent to review captured tasks, prepare training, assess results and test a candidate in your application before rollout."
+---
+
+Your coding agent can help throughout the ReasonBlocks workflow: connect the
+application, assess the data, prepare training, review the results and test the
+candidate in your project. You decide when to approve spending and enable traffic.
+
+The [setup CLI and helper](/agent-setup) configure capture. For the later stages,
+your coding agent works with your repository and the dashboard's plans and
+reports. These are active reviews while you work with the agent; they do not
+create a background monitor.
+
+## The workflow
+
+| Stage | Evidence the agent reviews | Recommendation | Your action |
+| --- | --- | --- | --- |
+| Connect | Actual client configuration, task boundaries and records in **Data** | Confirm capture or identify the missing connection | Provide the source URL and runtime credentials |
+| Assess data | Independent task groups, workflow coverage and data quality | Collect specific missing tasks or prepare training | Confirm that the examples represent the intended workload |
+| Prepare | Environment checks, frozen task split and cost estimate | Explain readiness issues and a proposed spending cap | Review the plan and approve paid work in **Training** |
+| Review results | Completion state, held-out evaluation and baseline comparisons | Identify improvements, regressions and unknowns | Decide whether to test the candidate further |
+| Test in your project | Existing tests and isolated application-level checks | Recommend an isolated canary test or changes first | Review the test plan and approve its traffic and spending |
+| Roll out and iterate | Observed results from the chosen traffic share | Keep, expand, pause or return to the original provider | Confirm traffic changes in **Training** |
+
+## 1. Connect and verify capture
+
+Start with [Set up with your coding agent](/agent-setup). The agent inspects the
+process making model calls, connects the helper and keeps one run ID across each
+task. After an authorized real workflow, confirm its records in **Data**.
+
+The local `doctor` check cannot establish delivery to the service. A useful agent
+update distinguishes the evidence:
+
+```text
+The local configuration checks pass. I still need to confirm a completed task
+appears in Data before calling the connection verified.
+```
+
+## 2. Decide whether the data is ready
+
+Ask the agent to review the available source records and your application's
+expected workload. Readiness depends on **representative, independent tasks**,
+not an arbitrary number of API calls. A long conversation can contain many calls
+while still representing one task.
+
+Check whether the data includes the workflows, tool sequences and failure cases
+you want the model to handle. Keep related attempts together so they cannot leak
+across training, calibration and evaluation groups. Freeze held-out tasks before
+training; their outcomes should not become training inputs.
+
+The agent should recommend a concrete next step based on the evidence:
+
+```text
+The examples cover successful order lookups, but I have not found cancellation
+or missing-order tasks. Collect those workflows before preparing training.
+```
+
+That is an example of the recommendation format, not a claim about your data.
+The current training recipe's minimum task requirements are documented in
+[Train your complete agent](/full-agent-training#1-connect-your-data).
+
+## 3. Prepare the environment and training plan
+
+Capture alone does not recreate your databases or tools. Full-agent training needs
+a resettable test copy of the tools and data, connected through an adapter, plus
+an independent outcome evaluator. Your coding agent can help implement that
+adapter using the real tool contracts, test-system access and success criteria.
+See [Connect a test environment](/full-agent-training#2-connect-a-test-environment-once).
+
+Tasks collected for training need real restorable starting states, or curated
+starting tasks that the test environment can replay. The agent should identify
+missing state instead of assuming earlier captures provide it.
+
+Use **Prepare training** to freeze the data and check the environment, tools and
+local model setup. The agent reviews the preparation results and estimate before
+recommending a spending cap. Preparation makes no model calls; local checks do
+not establish remote provider access or funding. You review the plan and approve
+the paid stages in **Training**.
+
+## 4. Review the finished run
+
+When you return to the task or ask for an update, the agent can review the latest
+training status and available report. A finished job is not evidence that the
+candidate passed evaluation.
+
+Compare the reported stock student, teacher, distilled student and guarded
+candidate on the frozen held-out tasks. The built-in sandbox evaluation runs
+these four comparisons. Review task success, inference cost,
+mean and p95 latency, tool failures and evaluator identity. Keep upfront training
+cost separate from inference cost. Mark missing measurements and incomplete
+outcomes as unknown.
+
+The recommendation should cite the actual report and distinguish measured
+results from assumptions. For example:
+
+```text
+Training has finished. Before recommending a rollout, I will compare the
+held-out results with the baseline and check whether the report leaves any
+task outcomes or cost measurements unresolved.
+```
+
+## 5. Test the candidate in your application
+
+Have the coding agent run relevant existing tests in your repository and prepare
+application-level checks using your real client and tool loop. Your application
+executes those tests and tools. Use the isolated test state for checks that write
+data, and retain the same inputs and acceptance criteria for baseline and candidate.
+
+### Access to the candidate
+
+Full-agent distillation currently has no separate private candidate-test endpoint.
+Review the built-in held-out evaluation first. Additional live candidate tests
+use an **approved canary**: a limited traffic share enabled in **Training** on the
+source receiving the test requests.
+
+If that source receives only isolated test traffic, you can approve the canary
+and run your application tests through its existing capture URL. If it also
+receives production traffic, enabling the canary affects that traffic too; it
+cannot be described as a private test. Agree on the source and traffic plan
+before enabling it. Changing a client's `model` argument does not provide a
+separate way to select the trained release.
+
+For each candidate test, inspect the response headers: `x-reasonblocks-route`
+should identify `student` or `teacher`, and `x-rb-release` should match the
+reviewed release. Successful capture alone may mean the request was forwarded
+to the original provider; it does not prove the candidate handled it.
+
+The coding agent can prepare tests before candidate access is enabled, but must
+not claim they ran against the candidate. Local unit tests alone do not establish
+model quality. Provider calls and external test systems may incur costs.
+
+Keep held-out results out of training inputs. Record any regression as an observed
+failure with its task, expected behavior and available evidence.
+
+## 6. Recommend rollout and the next iteration
+
+After reviewing the report and application tests, the agent recommends a traffic
+share and explains the tradeoff using measured results. You confirm the traffic
+change and inference spending in **Training**. Follow the
+[release requirements](/full-agent-training#5-enable-the-reviewed-release),
+including supported request shapes and worker continuity.
+
+At your next review, use observed task outcomes, failures, cost and latency to
+decide whether to expand the rollout or return new tasks to the original provider.
+Collect concrete gaps for the next iteration while preserving the held-out
+evaluation boundary. Returning traffic cannot undo tool actions already executed.
+
+## Where the agent gets evidence
+
+Use the signed-in dashboard's **Data** and **Training** pages and their reports.
+When your environment already provides authorized control-API access, the agent
+can also use the available readiness, estimates, status and results endpoints.
+The current control API uses authenticated Supabase sessions; the capture key
+alone does not grant access to training controls or reports.
+
+The agent should state which reports or local results it actually reviewed and
+which inputs remain unavailable. This workflow adds no new lifecycle CLI commands
+and does not imply permission to start paid work or change traffic.
