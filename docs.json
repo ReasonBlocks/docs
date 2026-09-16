@@ -31,6 +31,7 @@
             "group": "Getting Started",
             "pages": [
               "introduction",
+              "agent-setup",
               "full-agent-training",
               "quickstart",
               "client-integration",

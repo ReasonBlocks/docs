@@ -1,0 +1,265 @@
+---
+title: "Set up with your coding agent"
+description: "Give your coding agent one instruction to connect your Python application to ReasonBlocks capture and check the local setup."
+---
+
+Give your coding agent this instruction:
+
+```text
+Read https://docs.reasonblocks.com/agent-setup.md and integrate ReasonBlocks into this project.
+```
+
+ReasonBlocks provides a **CLI**, a command-line tool that generates configuration;
+a small **Python integration helper** that connects your existing client; and an
+**agent skill** with the setup instructions. Your existing OpenAI or Anthropic
+Python client library—the provider's SDK—continues making model requests.
+
+<Note>
+The CLI and helper are available on PyPI in `rbtrace==1.1.1`. This version adds
+automatic run labeling when you import the generated helper. If you already use
+a generated 1.1.0 connection, follow [Migrate an older generated connection](#migrate-an-older-generated-connection)
+to update it while preserving a backup.
+</Note>
+
+## What you need
+
+- A Python 3.10 or newer application using OpenAI Chat Completions or Anthropic Messages.
+- A data source's exact HTTPS capture URL and capture key from **Data → Manage connection**.
+  An organization administrator can create the source and generate its key.
+- Your existing provider API key, supplied through your application's secret environment.
+
+**Connecting and capturing need no sandbox.** You can connect your existing
+application and collect its normal workflow calls. Training later needs a way to
+reset and exercise your tools safely; see [Preparing for training](#preparing-for-training).
+
+The CLI configures a connection already issued by the dashboard. It does not
+create an account or invent a source URL. Capture keys expire after seven days;
+rotating a key invalidates the previous one.
+
+## 1. Install into the application environment
+
+Use your project's package manager. For uv:
+
+```bash
+uv add rbtrace==1.1.1
+```
+
+For a pip-managed environment:
+
+```bash
+python -m pip install rbtrace==1.1.1
+```
+
+Record the dependency in the existing manifest or requirements file. Use the
+Python environment that runs the application. `uvx` installs a tool into a
+separate environment; it does not add the dependency to your application.
+
+## 2. Generate the connection files
+
+Set `REASONBLOCKS_CAPTURE_URL` to the complete URL copied from **Data**, including
+the source ID and provider suffix. For Anthropic:
+
+```bash
+python -m rbtrace init \
+  --capture-url "$REASONBLOCKS_CAPTURE_URL" \
+  --provider anthropic --path . --json
+```
+
+Use `--provider openai` with the source's OpenAI URL. Add `--dry-run` to preview
+the files without writing them. The installed `rbtrace` command accepts the same
+arguments as `python -m rbtrace`.
+
+The CLI generates `.reasonblocks/config.json`, `reasonblocks_setup.py` and
+`.reasonblocks/SETUP.md`. These contain connection settings and instructions,
+not credentials. Supply the capture key through `REASONBLOCKS_CAPTURE_KEY` in
+your secret environment. The existing dashboard name `RB_CAPTURE_KEY` is also
+accepted; if both are set, they must agree. Keep your provider key in its usual
+location, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
+
+### Choose an importable helper location
+
+The `--path .` example fits a flat project. For an installed package under
+`src/my_agent`, generate the helper beside the package modules:
+
+```bash
+python -m rbtrace init \
+  --capture-url "$REASONBLOCKS_CAPTURE_URL" \
+  --provider anthropic --path src/my_agent --json
+```
+
+Use `from my_agent import reasonblocks_setup` or a package-relative import.
+A script launched directly as `python src/my_agent/main.py` can import a helper
+beside it with `import reasonblocks_setup`; it may not find one at the repository
+root. Follow the actual application layout instead of adding a `sys.path` workaround.
+
+Ship `reasonblocks_setup.py` and its adjacent `.reasonblocks/config.json` with
+the application. Include the hidden config directory explicitly in wheel package
+data or the deployed image; `.reasonblocks/SETUP.md` is optional in deployments.
+Test the real entrypoint from outside the repository directory to verify imports
+and config lookup.
+
+## 3. Connect your existing client
+
+For Anthropic:
+
+```python
+from anthropic import Anthropic
+import reasonblocks_setup
+
+client = Anthropic(**reasonblocks_setup.client_kwargs())
+```
+
+For OpenAI:
+
+```python
+from openai import OpenAI
+import reasonblocks_setup
+
+client = OpenAI(**reasonblocks_setup.client_kwargs())
+```
+
+Async clients accept the same settings. Preserve the application's other client
+settings and merge existing headers without replacing the capture headers.
+The helper supplies the source base URL, the `x-reasonblocks-key` header and
+`max_retries=0`. Automatic retries are disabled because a timeout can leave paid
+work with an unknown outcome. Reconcile that outcome before retrying. You can
+explicitly override `max_retries` in the returned kwargs when your application
+has chosen a retry policy.
+
+Importing the generated helper installs run labeling for supported HTTP
+transports. Requests to your configured capture host receive `x-rb-run` and
+`x-rb-seq` headers. These labels help group and order calls; they do not prove
+that a complete task was captured or that its environment can be replayed.
+Importing the helper sends no requests. Set `RBTRACE_DISABLE=1` before startup
+to disable labeling; `doctor` reports that condition.
+
+The helper adds your configured capture hostname to the labeling allowlist.
+In `RBTRACE_HOSTS`, a plain hostname matches only that host; a leading-dot entry
+such as `.example.com` matches its subdomains. Use `example.com,.example.com`
+when you intentionally need both the domain and its subdomains.
+
+Keep an explicit boundary for **each task**, including concurrent jobs. Create
+its headers once:
+
+```python
+headers = reasonblocks_setup.run_headers()
+```
+
+This creates a new `x-rb-run` identifier. Pass the same headers on every model
+call in that task. For example, adapt your existing Anthropic call:
+
+```python
+response = client.messages.create(
+    model=model,
+    max_tokens=1536,
+    messages=messages,
+    tools=tools,
+    extra_headers=headers,
+)
+```
+
+For OpenAI, pass `extra_headers=headers` to
+`client.chat.completions.create(...)`. Keep your real messages, tool definitions
+and tool results. Create fresh headers for the next task; queue workers and
+concurrent jobs must each retain their own headers. If your application already
+has a task ID, pass `run_id=existing_task_id` to `run_headers()`.
+
+An existing `with rbtrace.client.run():` scope around each complete task can
+supply the boundary instead. Without task headers or scopes, unscoped calls
+share a process-wide run. Your application continues executing its tools.
+
+## 4. Check the setup
+
+Run the check in the application's Python environment:
+
+```bash
+python -m rbtrace doctor --path . --json
+```
+
+For uv, use `uv run python -m rbtrace doctor --path . --json`. Use the same
+`--path` chosen for initialization, such as `src/my_agent`.
+
+The check inspects local configuration, SDK availability, capture-key presence
+and whether the selected SDK transport can be labeled. It makes no network
+calls. It does not check provider credentials,
+validate the capture key with the service or prove that your calls reached **Data**.
+Run relevant local tests for the integration and test the actual application entrypoint.
+
+When you run a real workflow, normal provider fees apply and the service receives
+its requests for capture. Confirm the source records in **Data** before treating
+the connection as verified end to end.
+
+## Migrate an older generated connection
+
+To upgrade an unmodified generated 1.1.0 connection, keep its existing source
+URL and capture key. If a previous setup generated a gateway configuration,
+first create a dashboard data source and obtain its actual capture URL and key.
+Then run:
+
+```bash
+python -m rbtrace migrate \
+  --capture-url "$REASONBLOCKS_CAPTURE_URL" \
+  --provider anthropic --path . --json
+```
+
+Use `--provider openai` for an OpenAI source, and the directory containing the old
+generated files for `--path`. Add `--dry-run` to preview. Migration backs up the
+old generated files before writing the current connection. It refuses to replace
+a customized helper; your coding agent must inspect and merge those changes.
+
+Update application code to construct the client with `client_kwargs()`.
+Importing the generated helper installs labeling. Remove obsolete
+`reasonblocks_setup.install()` calls; a separate `rbtrace.client.install()` call
+is no longer needed. Keep existing explicit `shim.run()` task scopes or use
+fresh `run_headers()` for each task. Remove the old gateway base-URL setting
+from deployment configuration. Restart the affected clients and processes;
+changing a config file does not reroute an already-constructed client.
+The migration command changes generated files; it does not edit
+arbitrary application code or create dashboard credentials. Re-run `doctor` and
+the actual entrypoint after the code changes.
+
+Migrate only a compatible OpenAI Chat Completions or Anthropic Messages client.
+Do not switch a Fireworks, Bedrock, Gemini or Responses application to a different
+provider/API as part of setup. Those applications need a separately planned
+compatibility change.
+
+## Preparing for training
+
+A **sandbox** is a test copy of the tools and data your agent works with, reset to
+a known starting state for each task. For example, a support agent might use a
+test ticket store and test order records. It does not necessarily mean running
+a new server yourself.
+
+A small adapter connects snapshot/reset operations, tool execution and an outcome
+evaluator to that test environment. Your coding agent can help implement it, but
+it needs your application's tool contracts, access to the test systems and a way
+to judge a completed task. See [Train your complete agent](/full-agent-training).
+
+Once a real repeatable snapshot exists, attach its ID at the task boundary:
+
+```python
+headers = reasonblocks_setup.run_headers(snapshot_id=starting_snapshot_id)
+```
+
+The snapshot is optional for ordinary capture and required for the full-agent
+training workflow. The helper attaches an ID; it does not create the snapshot.
+Earlier captures without a restorable starting state do not automatically become
+training tasks. Collect tasks with real snapshots or curate replayable starting
+tasks for the connected test environment.
+Training preparation, budget approval and enabling a trained release are later steps.
+
+## Install the reusable agent skill
+
+Install the reusable setup instructions:
+
+```bash
+npx skills add https://docs.reasonblocks.com
+```
+
+Select `reasonblocks-setup` when offered. The skill helps the coding agent inspect
+your project, place the helper correctly and verify the integration. An MCP
+server is not required for this setup.
+
+These helpers run in Python applications. They do not reach JavaScript clients
+or model calls made by a separate child process. Integrate at the process that
+actually makes the request, and report any unsupported path explicitly.
