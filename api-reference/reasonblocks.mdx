@@ -82,6 +82,11 @@ headers = reasonblocks_setup.run_headers()
 | `x-rb-seq` | Added automatically: 1, 2, 3 … within the task. Ignored by the dashboard; used by self-hosted gateway reconstruction, where a gap leaves the run unproven |
 | `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture |
 
+The connection answers with `x-reasonblocks-capture: accepted` or `skipped`, and with
+`x-reasonblocks-capture-reason` when it skipped. A skipped call is still forwarded and
+still answered; it simply records no training row. See
+[whether a call was captured](/endpoint-compatibility#whether-a-call-was-captured).
+
 IDs use 1–128 letters, numbers, underscores, periods, colons or hyphens. Header names
 are case-insensitive: `X-RB-Run` / `X-RB-Seq` (as the shim writes them) and
 `x-rb-run` / `x-rb-seq` are the same headers. The helper attaches identifiers; it does
