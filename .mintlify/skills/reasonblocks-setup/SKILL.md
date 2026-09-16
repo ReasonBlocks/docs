@@ -38,8 +38,9 @@ Use the exact HTTPS source URL and key issued in **Data**. Current support is:
 - Anthropic Messages: `/capture/SOURCE_ID/anthropic`, provider `anthropic`.
 
 Do not invent a source URL, treat `rb_live_` organization/API keys as capture keys or
-silently switch provider/API to fit this list. Responses, Gemini, Bedrock,
-Fireworks and arbitrary upstreams are outside this dashboard setup.
+silently switch provider/API to fit this list. Responses, Fireworks and arbitrary
+upstreams are outside this dashboard setup. Gemini and Bedrock are captured through the
+self-hosted gateway instead: https://docs.reasonblocks.com/gemini-and-bedrock.md
 
 Account sign-in and source/key creation currently happen in the dashboard.
 Capture keys expire after seven days; rotation invalidates the previous key.

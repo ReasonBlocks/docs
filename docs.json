@@ -43,6 +43,7 @@
             "group": "Reference",
             "pages": [
               "endpoint-compatibility",
+              "gemini-and-bedrock",
               "api-reference/reasonblocks"
             ]
           }

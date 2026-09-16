@@ -1,0 +1,85 @@
+---
+title: "Gemini and Bedrock"
+description: "Capture Google Gemini and Amazon Bedrock traffic through the self-hosted capture gateway, which runs in your own infrastructure."
+---
+
+The dashboard connection covers OpenAI Chat Completions and Anthropic Messages. Google
+Gemini and Amazon Bedrock are captured a different way: through the **capture gateway**,
+a forwarder you run inside your own infrastructure. Your traffic and your captured data
+stay on your side of the network.
+
+The gateway is a byte-transparent reverse proxy. It forwards each request to the real
+provider unchanged and records the exchange on the way past, so the provider sees exactly
+what your application sent.
+
+## Run the gateway
+
+One long-running process, reachable by the application that makes model calls:
+
+```bash
+python -m rbtrace.proxy \
+  --host 0.0.0.0 \
+  --port 8787 \
+  --db /var/lib/rbtrace/capture.duckdb \
+  --note production
+```
+
+Run it under systemd, Kubernetes or your container platform with restart-on-failure, and
+put the capture database on a durable volume. Ask ReasonBlocks for the gateway
+distribution and the deployment guide.
+
+## Point your SDK at it
+
+One prefix per provider. The SDK's own path is appended after the prefix.
+
+| Provider | Application configuration |
+| --- | --- |
+| Gemini | `GOOGLE_GEMINI_BASE_URL=http://rbtrace-proxy:8787/gemini` |
+| Bedrock | boto3 `endpoint_url="http://rbtrace-proxy:8787/bedrock/us-east-1"` |
+
+Use the gateway's hostname as your application reaches it — a container service name, an
+internal DNS name or an address. `GET /__rbtrace/routes` prints the table actually in
+effect.
+
+## Gemini
+
+`generateContent` and `streamGenerateContent` are recorded as model turns, streaming
+included. Tool declarations, tool-choice configuration, thinking configuration and
+response-schema settings are all normalised, and the model is read from the path.
+`countTokens`, `embedContent` and the batch and prediction endpoints are captured but are
+not counted as turns.
+
+Authentication passes through unchanged, whether you send `x-goog-api-key` or a `key`
+query parameter. The key value is never stored.
+
+Vertex AI is not in the default table and has not been exercised against a live account —
+treat it as unverified rather than supported.
+
+## Bedrock
+
+`InvokeModel`, `Converse` and their streaming forms are recorded as model turns. Tool use,
+tool results, reasoning content, cache points and usage — including cache reads and writes —
+are normalised, and AWS event-stream responses are decoded. `CountTokens` is captured but is
+not a turn.
+
+**Authentication matters here.** A Bedrock API key sent as a bearer token is the proven
+mode: it is not signed over the host, path or body, so pointing the base URL at the gateway
+is all that is required. This is what has been exercised against live Bedrock, on Amazon
+Nova and Claude Sonnet 4.5, through both raw HTTP and boto3.
+
+**SigV4 access keys are not proven.** A SigV4 signature covers the `Host` header, so a
+signature computed for the gateway is rejected once the request reaches AWS. A client can be
+configured to sign for the upstream while sending to the gateway, and the gateway preserves
+the exact request bytes that requires — but that recipe has never been exercised against a
+live account. Do not plan a Bedrock rollout on SigV4 without testing it first; use a Bedrock
+API key.
+
+AWS excludes bidirectional streaming, Agents for Bedrock and Data Automation from bearer
+authentication, and the gateway does not proxy the bidirectional stream either.
+
+## Task labelling
+
+The gateway uses the same `rbtrace` package and the same task labels as the dashboard
+connection, so grouping a task's calls works the same way. See
+[Integrating your agent](/client-integration) for the client settings and
+[Endpoint compatibility](/endpoint-compatibility) for the header contract.

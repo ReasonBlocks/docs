@@ -55,8 +55,9 @@ find an empty dataset.
 ## Boundaries
 
 The current dashboard connection and setup CLI do not provide OpenAI Responses,
-Realtime, WebSockets, Gemini, Bedrock, Fireworks or arbitrary OpenAI-compatible
-upstreams. A Python wrapper does not make calls in a JavaScript or native child
+Realtime, WebSockets, Fireworks or arbitrary OpenAI-compatible upstreams. Google Gemini
+and Amazon Bedrock are captured through the self-hosted gateway instead — see
+[Gemini and Bedrock](/gemini-and-bedrock). A Python wrapper does not make calls in a JavaScript or native child
 process compatible; configure the process that actually sends the request.
 
 For a trained full-agent release, use **non-streaming** requests with text and
@@ -68,3 +69,6 @@ before enabling a release.
 
 An older generated connection should follow
 [the migration procedure](/agent-setup#migrate-an-older-generated-connection).
+
+The sequence number `x-rb-seq` is read by the self-hosted gateway, where a gap in a task's
+numbering leaves the run unproven. The dashboard connection groups by `x-rb-run` alone.
