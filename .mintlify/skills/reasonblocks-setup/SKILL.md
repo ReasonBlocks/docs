@@ -87,8 +87,8 @@ and adds the configured capture host to the allowlist. `RBTRACE_HOSTS` entries
 without a leading dot match exact hosts; `.example.com` matches subdomains.
 Every model call the provider SDK makes then carries `x-rb-run` and `x-rb-seq`.
 Do not add a manual `rbtrace.client.install()` call. The dashboard groups a task's
-calls by `x-rb-run`, and one `x-rb-run` is one training task; it does not read
-`x-rb-seq`, which self-hosted gateway reconstruction uses. The labels help group
+calls by `x-rb-run`, and one `x-rb-run` is one training task; it does not
+currently read `x-rb-seq`, which orders a task's calls. The labels help group
 and order requests. They do not establish complete capture or a replayable
 environment. `RBTRACE_DISABLE=1` disables labelling at startup; `doctor` reports
 that condition.

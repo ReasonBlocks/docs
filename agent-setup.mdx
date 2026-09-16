@@ -133,9 +133,8 @@ rather than adding a retry loop.
 Importing the helper installs run labelling for the process, so every model call
 made through the client carries `x-rb-run` and `x-rb-seq`. The dashboard groups a
 task's calls by `x-rb-run` and uses `x-rb-snapshot-id` for full-agent training.
-The sequence number is carried on every call; self-hosted gateway reconstruction
-uses it to prove a run complete. The dashboard does not read it — it groups solely
-by `x-rb-run`. Importing the helper sends no requests, reads no request bodies and
+The sequence number is carried on every call so a task's calls stay in order. The
+dashboard does not currently read it — it groups solely by `x-rb-run`. Importing the helper sends no requests, reads no request bodies and
 changes no credentials. Set `RBTRACE_DISABLE=1` before startup to turn labelling
 off; `doctor` reports that condition.
 

@@ -47,9 +47,8 @@ call your provider client makes carries an `x-rb-run` header (which task the cal
 belongs to) and an `x-rb-seq` header (this is call number *n* of that task).
 The dashboard groups a task's calls by `x-rb-run`; that group is the unit
 full-agent training works on, together with `x-rb-snapshot-id` when you supply
-one. The sequence number is carried on every call and is what self-hosted gateway
-reconstruction uses to prove a run complete; the dashboard does not read it and
-groups solely by `x-rb-run`. Importing the helper sends no requests.
+one. The sequence number is carried on every call so a task's calls stay in order;
+the dashboard does not currently read it and groups solely by `x-rb-run`. Importing the helper sends no requests.
 `RBTRACE_DISABLE=1` turns the labelling off without removing the import;
 `doctor` reports that condition.
 
