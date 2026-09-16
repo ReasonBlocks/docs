@@ -37,10 +37,21 @@ Preserve other application settings and merge headers deliberately.
 client = OpenAI(**reasonblocks_setup.client_kwargs())
 ```
 
+## Run labelling (automatic)
+
+Importing the generated helper installs run labelling for the process: every model call
+the provider client makes carries `x-rb-run` (which task) and `x-rb-seq` (call number
+within the task). The sequence is what lets a run be proven complete, and only
+proven-complete runs are eligible for training. It patches only the HTTP transport the
+SDK uses, reads no bodies and sends nothing of its own. `RBTRACE_DISABLE=1` turns it off;
+`python -m rbtrace doctor` reports whether calls from an environment will be labelled.
+
 ## `run_headers(snapshot_id=None, run_id=None)`
 
-Returns headers for one task. If `run_id` is omitted, generates a new ID.
-Call once per task and reuse the result as `extra_headers` on every model call.
+Optional. Returns headers naming one task; if `run_id` is omitted, generates a new ID.
+Call once per task and reuse the result as `extra_headers` on every model call of that
+task when one process runs many jobs. Sequence numbers are still added automatically,
+keyed by the run ID.
 
 ```python
 headers = reasonblocks_setup.run_headers()
@@ -49,6 +60,7 @@ headers = reasonblocks_setup.run_headers()
 | Header | Requirement |
 | --- | --- |
 | `x-rb-run` | One ID per task, retained through all its model calls |
+| `x-rb-seq` | Added automatically: 1, 2, 3 … within the task; a gap marks the run unprovable |
 | `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture |
 
 IDs use 1–128 letters, numbers, underscores, periods, colons or hyphens. The helper

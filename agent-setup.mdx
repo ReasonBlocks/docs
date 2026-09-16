@@ -121,8 +121,12 @@ client = OpenAI(**reasonblocks_setup.client_kwargs())
 
 Async clients accept the same settings. Preserve the application's other client
 settings and merge existing headers without replacing the capture headers.
-The helper supplies the source base URL and the `x-reasonblocks-key` header.
+The helper supplies the source base URL and the `x-reasonblocks-key` header, and —
+because importing it installs run labelling for the process — every model call made
+through the client carries `x-rb-run` and `x-rb-seq`. That is the whole integration
+for capture; the sequence numbers are what make a task's run provably complete.
 
+Naming tasks yourself is optional and matters only when one process runs many jobs.
 At the start of **each task**, create its headers once:
 
 ```python
@@ -148,7 +152,7 @@ and tool results. Create fresh headers for the next task; queue workers and
 concurrent jobs must each retain their own headers. If your application already
 has a task ID, pass `run_id=existing_task_id` to `run_headers()`.
 
-The helper uses explicit client settings and per-task headers. Your application
+The helper uses explicit client settings; task headers are optional. Your application
 continues executing its tools.
 
 ## 4. Check the setup
@@ -187,9 +191,11 @@ generated files for `--path`. Add `--dry-run` to preview. Migration backs up the
 old generated files before writing the current connection. It refuses to replace
 a customized helper; your coding agent must inspect and merge those changes.
 
-Update application code to construct the client with `client_kwargs()` and use
-`run_headers()` once per task. Replace the old `install()` and `shim.run()`
-or `shim.new_run()` integration calls, and remove the old gateway base-URL setting
+Update application code to construct the client with `client_kwargs()`. The
+generated helper performs `install()` itself when imported, so remove any manual
+`rbtrace.client.install()` call you added earlier (a second call is a harmless
+no-op); an old `shim.run()` / `shim.new_run()` scope can stay or become
+`run_headers()` — both still name a task. Remove the old gateway base-URL setting
 from deployment configuration. Restart the affected clients and processes;
 changing a config file does not reroute an already-constructed client.
 The migration command changes generated files; it does not edit

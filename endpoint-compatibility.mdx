@@ -18,7 +18,9 @@ base URL and headers. Start with [Set up with your coding agent](/agent-setup).
 ## Authentication and grouping
 
 Use your normal provider authentication alongside `x-reasonblocks-key`, carrying
-the dashboard-issued capture key. Reuse `x-rb-run` across every call in one task.
+the dashboard-issued capture key. The generated helper labels every call with
+`x-rb-run` (the task) and `x-rb-seq` (the call's number within it); reuse the same
+`x-rb-run` across every call in one task.
 A later full-agent training workflow also requires `x-rb-snapshot-id` naming a
 real repeatable starting state. Ordinary capture does not require that snapshot.
 
@@ -41,3 +43,7 @@ before enabling a release.
 
 Older generated gateway connections should follow
 [the migration procedure](/agent-setup#migrate-an-older-generated-connection).
+
+Self-hosted gateway deployments have a wider surface — Gemini, Bedrock, Fireworks and
+other OpenAI-compatible hosts, Ollama's native API, and media capture to an object
+store — which is documented with the gateway itself rather than here.

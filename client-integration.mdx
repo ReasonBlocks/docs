@@ -31,15 +31,24 @@ include its adjacent `.reasonblocks/config.json` in deployment files. Follow the
 [helper location guide](/agent-setup#choose-an-importable-helper-location) instead
 of changing `sys.path`.
 
-## One run ID per task
+## Run identity and sequence numbers
 
-Create headers once at the task boundary:
+Importing the generated helper installs run labelling for the process: every model
+call your provider client makes carries an `x-rb-run` header (which task the call
+belongs to) and an `x-rb-seq` header (this is call number *n* of that task). The
+sequence is what lets a run be proven complete, and only proven-complete runs are
+eligible for training — so nothing else in your code has to change for capture to
+be useful. `RBTRACE_DISABLE=1` turns the labelling off without removing the import.
+
+Naming tasks yourself is optional. When one process handles many logical jobs — a
+queue worker, a batch loop, a thread pool — create headers once at each task boundary
+so the jobs do not merge into one run:
 
 ```python
 headers = reasonblocks_setup.run_headers()
 ```
 
-Pass them on every model call in the task:
+and pass them on every model call in that task:
 
 ```python
 response = client.chat.completions.create(
@@ -55,6 +64,7 @@ Reuse the headers through the whole task, including after tool execution. A new
 task gets new headers. Keep them in task-local state for concurrent jobs and
 long-lived workers. Pass `run_id=existing_task_id` if your application already
 has a suitable ID: 1–128 letters, numbers, underscores, periods, colons or hyphens.
+The sequence number is still added automatically, keyed by the run ID you passed.
 
 Keep the full conversation, policy, tool definitions and actual tool results in
 each request. Add the returned assistant message and tool results before the next
