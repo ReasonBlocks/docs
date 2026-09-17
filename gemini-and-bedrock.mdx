@@ -1,18 +1,30 @@
 ---
 title: "Gemini and Bedrock"
-description: "Capture Google Gemini and Amazon Bedrock traffic through the self-hosted capture gateway, which runs in your own infrastructure."
+description: "Capture Google Gemini and Amazon Bedrock traffic through the capture gateway, a forwarder you run inside your own infrastructure."
 ---
 
 The dashboard connection covers OpenAI Chat Completions and Anthropic Messages. Google
 Gemini and Amazon Bedrock are captured a different way: through the **capture gateway**,
-a forwarder you run inside your own infrastructure. Your traffic and your captured data
-stay on your side of the network.
+a forwarder you run inside your own infrastructure. Your captured data is written to
+storage you own and never leaves your network; the model calls themselves still go on to
+Google or AWS as before.
 
-The gateway is a byte-transparent reverse proxy. It forwards each request to the real
-provider unchanged and records the exchange on the way past, so the provider sees exactly
-what your application sent.
+The gateway forwards each request to the real provider and records the exchange as it
+passes. It does not parse or reshape the request on the way out — only the `Host` header
+is rewritten to the upstream, and hop-by-hop headers are dropped, which is what any proxy
+must do.
 
-## Run the gateway
+The gateway captures. It does not serve a trained model: Gemini and Bedrock requests are
+always answered by your provider. Serving a trained release is a dashboard feature.
+
+## Get the gateway
+
+The gateway is **not** the `rbtrace` package on PyPI. That package is the client library
+this page uses later for task labelling; it contains no server. Ask ReasonBlocks for the
+gateway distribution and its deployment guide — it ships as a Python service with a
+container image.
+
+## Run it
 
 One long-running process, reachable by the application that makes model calls:
 
@@ -24,9 +36,18 @@ python -m rbtrace.proxy \
   --note production
 ```
 
-Run it under systemd, Kubernetes or your container platform with restart-on-failure, and
-put the capture database on a durable volume. Ask ReasonBlocks for the gateway
-distribution and the deployment guide.
+Run it under systemd, Kubernetes or your container platform with restart-on-failure.
+
+<Warning>
+  The gateway's own endpoints under `/__rbtrace/` are not authenticated, and one of them
+  stops the capture writer. Bind it where your application can reach it and the public
+  cannot — a private network, a container network, or `--host 127.0.0.1` when the
+  application shares the host.
+</Warning>
+
+Put `--db` on a durable volume. If your agents send images or documents, the gateway also
+writes those alongside the database, so include that directory in the same volume and the
+same backups.
 
 ## Point your SDK at it
 
@@ -35,51 +56,111 @@ One prefix per provider. The SDK's own path is appended after the prefix.
 | Provider | Application configuration |
 | --- | --- |
 | Gemini | `GOOGLE_GEMINI_BASE_URL=http://rbtrace-proxy:8787/gemini` |
-| Bedrock | boto3 `endpoint_url="http://rbtrace-proxy:8787/bedrock/us-east-1"` |
+| Bedrock | boto3 `endpoint_url="http://rbtrace-proxy:8787/bedrock/REGION"` |
 
-Use the gateway's hostname as your application reaches it — a container service name, an
-internal DNS name or an address. `GET /__rbtrace/routes` prints the table actually in
-effect.
+`REGION` is a placeholder — substitute the region you call, such as `us-east-1`. The
+gateway forwards to `bedrock-runtime.REGION.amazonaws.com`.
+
+Use the gateway's hostname as your application reaches it. `GET /__rbtrace/routes` prints
+the table actually in effect.
+
+## Label each task
+
+Capture alone records calls. Labelling is what groups a task's calls together, and without
+it the calls arrive as one undifferentiated stream. Install the client library in the
+application:
+
+```bash
+python -m pip install rbtrace==1.1.1
+```
+
+Then, once at start-up, and a scope around each complete task:
+
+```python
+import rbtrace.client
+
+rbtrace.client.install()
+
+for task in tasks:
+    with rbtrace.client.run():
+        run_agent(task)
+```
+
+`install()` patches the HTTP transports your SDK uses. For **boto3**, also call
+`rbtrace.client.install_botocore(session)` — botocore clients pick up the labelling when
+the session is constructed, so a client built before `install()` ran is not labelled.
+
+Two things that silently cost you labelling:
+
+- **A dotted internal hostname.** The library labels loopback and private addresses,
+  single-label service names such as `rbtrace-proxy`, and `.local` / `.internal` names. A
+  name like `gw.corp.example.com` is not labelled until you set
+  `RBTRACE_HOSTS=gw.corp.example.com`.
+- **Constructing a boto3 client before `install_botocore`.** Register first, then build
+  the client.
+
+`rbtrace.client.installed_transports()` returns what is actually patched; an empty result
+means nothing is being labelled, and is worth asserting in your own start-up check.
 
 ## Gemini
 
 `generateContent` and `streamGenerateContent` are recorded as model turns, streaming
 included. Tool declarations, tool-choice configuration, thinking configuration and
-response-schema settings are all normalised, and the model is read from the path.
+response-schema settings are normalised, and the model is read from the path.
 `countTokens`, `embedContent` and the batch and prediction endpoints are captured but are
 not counted as turns.
 
 Authentication passes through unchanged, whether you send `x-goog-api-key` or a `key`
 query parameter. The key value is never stored.
 
+Tool calls carry an id only on Gemini 3. On earlier models a tool call is paired to its
+result by name and order, which is less certain when one turn issues several calls to the
+same function.
+
 Vertex AI is not in the default table and has not been exercised against a live account —
 treat it as unverified rather than supported.
 
 ## Bedrock
 
-`InvokeModel`, `Converse` and their streaming forms are recorded as model turns. Tool use,
-tool results, reasoning content, cache points and usage — including cache reads and writes —
-are normalised, and AWS event-stream responses are decoded. `CountTokens` is captured but is
-not a turn.
+`InvokeModel`, `Converse` and `ConverseStream` are recorded as model turns. Tool use, tool
+results, reasoning content, cache points and usage — including cache reads and writes — are
+normalised, and AWS event-stream responses are decoded. `CountTokens` is captured but is
+not a turn. `InvokeModelWithResponseStream` is implemented and covered by tests, but has
+not been exercised against a live account.
 
-**Authentication matters here.** A Bedrock API key sent as a bearer token is the proven
-mode: it is not signed over the host, path or body, so pointing the base URL at the gateway
-is all that is required. This is what has been exercised against live Bedrock, on Amazon
-Nova and Claude Sonnet 4.5, through both raw HTTP and boto3.
+**Authentication decides whether this works at all.** A Bedrock API key sent as a bearer
+token is the proven mode — it is not signed over the host, path or body, so redirecting the
+base URL is enough. boto3 only uses bearer authentication when `AWS_BEARER_TOKEN_BEDROCK`
+is set:
 
-**SigV4 access keys are not proven.** A SigV4 signature covers the `Host` header, so a
-signature computed for the gateway is rejected once the request reaches AWS. A client can be
-configured to sign for the upstream while sending to the gateway, and the gateway preserves
-the exact request bytes that requires — but that recipe has never been exercised against a
-live account. Do not plan a Bedrock rollout on SigV4 without testing it first; use a Bedrock
-API key.
+```bash
+export AWS_BEARER_TOKEN_BEDROCK=<your Bedrock API key>
+```
+
+Without it boto3 signs with SigV4, and **SigV4 is not proven**. The signature covers the
+`Host` header, so a signature computed for the gateway is rejected once the request reaches
+AWS. A client can be configured to sign for the upstream while sending to the gateway, and
+the gateway preserves the exact bytes that requires — but that recipe has never been run
+against a live account. Do not plan a rollout on it.
+
+This mode has been exercised against live Bedrock on Amazon Nova and on Claude Sonnet 4.5.
 
 AWS excludes bidirectional streaming, Agents for Bedrock and Data Automation from bearer
 authentication, and the gateway does not proxy the bidirectional stream either.
 
-## Task labelling
+## Check that it is working
 
-The gateway uses the same `rbtrace` package and the same task labels as the dashboard
-connection, so grouping a task's calls works the same way. See
-[Integrating your agent](/client-integration) for the client settings and
-[Endpoint compatibility](/endpoint-compatibility) for the header contract.
+After running one task through your application:
+
+1. `GET /__rbtrace/stats` reports what the gateway has captured.
+2. `rbtrace.client.installed_transports()` in your application must not be empty.
+
+The capture database is held open by the running gateway. To take a readable copy without
+stopping it, `POST /__rbtrace/rotate` seals the current file and opens a new one. Rotate
+between tasks rather than during one, so a task's calls are not split across two files.
+
+## Task headers
+
+The gateway reads the same `x-rb-run` and `x-rb-seq` headers described in
+[Endpoint compatibility](/endpoint-compatibility). Unlike the dashboard, it reads
+`x-rb-seq` too: a gap in a task's numbering leaves that run unproven.

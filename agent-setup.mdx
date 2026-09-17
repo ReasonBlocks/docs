@@ -241,9 +241,10 @@ does not edit arbitrary application code or create dashboard credentials. Re-run
 `doctor` and the actual entrypoint after the code changes.
 
 Migrate only a compatible OpenAI Chat Completions or Anthropic Messages client.
-Do not switch a Fireworks, Bedrock, Gemini or Responses application to a different
-provider/API as part of setup. Those applications need a separately planned
-compatibility change.
+Do not switch an application to a different provider or API as part of setup. A Gemini
+or Bedrock application is captured through the gateway instead — see
+[Gemini and Bedrock](/gemini-and-bedrock) — and a Fireworks or OpenAI Responses
+application needs a separately planned compatibility change.
 
 ## Preparing for training
 

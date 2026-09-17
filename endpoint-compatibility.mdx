@@ -32,23 +32,30 @@ header details.
 ## Whether a call was captured
 
 A request the recorder cannot represent is still forwarded to your provider and still
-answered normally: capture never fails your model call. It does mean that call produces
-no training row, so every response says which happened.
+answered normally — being unrepresentable never costs you the call. It does mean that
+call produces no training row, so the response says which happened.
+
+(Two limits are refused before forwarding rather than passed on: a request body over
+2 MB, and a malformed `x-rb-snapshot-id`. Those return an error instead of a model
+answer.)
 
 | Response header | Meaning |
 | --- | --- |
-| `x-reasonblocks-capture: accepted` | The request was representable and a row was recorded |
+| `x-reasonblocks-capture: accepted` | The request was representable, so it is eligible to become a row |
 | `x-reasonblocks-capture: skipped` | Forwarded and answered, but not recorded |
 | `x-reasonblocks-capture-reason` | Present only when skipped: why, as a fixed label such as `unsupported_request_content` |
 
-`accepted` describes the request. A response can still fail to yield a usable reference
-after the headers are sent — a stream that ends early, for instance — and those appear in
-the pipeline's capture-gap report in **Data** rather than in a header.
+`accepted` describes the request only, and is set before the response streams: a response
+can still fail to yield a usable reference — a stream that ends early, for instance — and
+those appear in the pipeline's capture-gap report in **Data** rather than in a header. An
+error the connection itself returns carries no capture header at all.
 
-What gets skipped is ordinary, which is why it is worth checking: on OpenAI, request
-options outside the supported set (`presence_penalty`, `frequency_penalty`, `n`,
-`logprobs` among them) and any non-text message content such as an image; on Anthropic,
-`stop_sequences`, `top_k` and enabled extended thinking. One such option set globally
+What gets skipped is ordinary, which is why it is worth checking. Neither list below is
+exhaustive — the connection accepts a fixed set of request options and skips anything
+else. On OpenAI: options outside the supported set (`presence_penalty`,
+`frequency_penalty`, `n`, `logprobs` among them), and any non-text message content such as
+an image. On Anthropic: `stop_sequences`, `top_k`, enabled extended thinking, and likewise
+any message content that is not text, a tool use or a tool result. One such option set globally
 means no rows at all, so check this header once when you connect rather than waiting to
 find an empty dataset.
 

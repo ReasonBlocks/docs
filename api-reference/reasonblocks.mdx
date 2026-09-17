@@ -80,7 +80,7 @@ headers = reasonblocks_setup.run_headers()
 | --- | --- |
 | `x-rb-run` | One ID per task, retained through all its model calls; the dashboard's grouping key |
 | `x-rb-seq` | Added automatically: 1, 2, 3 … within the task. Not read by the dashboard, which groups by `x-rb-run`; the [self-hosted gateway](/gemini-and-bedrock) uses it, where a gap leaves the run unproven |
-| `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture |
+| `x-rb-snapshot-id` | Included when a real starting snapshot ID is supplied; needed for full-agent training, optional for ordinary capture. Must be 1–128 letters, numbers, underscores, periods, colons or hyphens — a malformed value is rejected, not ignored |
 
 The connection answers with `x-reasonblocks-capture: accepted` or `skipped`, and with
 `x-reasonblocks-capture-reason` when it skipped. A skipped call is still forwarded and
