@@ -4,9 +4,13 @@ description: "Connect your agent's model calls, collect workflow data and prepar
 ---
 
 ReasonBlocks captures the model calls in your agent's workflow and uses your
-application's tasks to train and evaluate a smaller model. You connect through
-a data source in the dashboard, keep your provider credentials and continue using
-your existing OpenAI or Anthropic Python client library.
+application's tasks to train and evaluate a smaller model. You keep your provider
+credentials and your existing Python client library throughout.
+
+How you connect depends on the provider. An OpenAI or Anthropic application connects
+to a data source in the dashboard, with nothing to install beyond a small helper. A
+Google Gemini or Amazon Bedrock application connects through the
+[capture gateway](/gemini-and-bedrock), which runs in your own infrastructure.
 
 ## Start with capture
 
