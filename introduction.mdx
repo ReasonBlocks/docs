@@ -7,16 +7,16 @@ ReasonBlocks captures the model calls in your agent's workflow and uses your
 application's tasks to train and evaluate a smaller model. You keep your provider
 credentials and your existing Python client library throughout.
 
-How you connect depends on the provider. An OpenAI or Anthropic application connects
-to a data source in the dashboard, with nothing to install beyond a small helper. A
-Google Gemini or Amazon Bedrock application connects through the
-[capture gateway](/gemini-and-bedrock), which runs in your own infrastructure.
+OpenAI, Anthropic, Google Gemini and Amazon Bedrock applications all connect the same
+way: a data source in the dashboard, and a small generated helper. Gemini and Bedrock have
+[their own setup section](/client-integration#gemini-and-bedrock), because their SDKs
+take the connection settings differently.
 
 ## Start with capture
 
-For a Gemini or Bedrock application, start at
-[Gemini and Bedrock](/gemini-and-bedrock) instead — the steps below are the dashboard
-connection.
+For a Gemini or Bedrock application, read
+[Gemini and Bedrock](/client-integration#gemini-and-bedrock) — you create the source
+the same way, and that section shows the client setup.
 
 Create a source in **Data**, copy its capture URL and key, and ask your coding
 agent to read the [setup guide](/agent-setup) — its plain-text copy is

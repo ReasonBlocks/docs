@@ -11,9 +11,13 @@ a generic provider prefix.
 | --- | --- | --- | --- |
 | OpenAI Python, `OpenAI` or `AsyncOpenAI` | `/capture/SOURCE_ID/openai/v1` | Chat Completions | `openai` |
 | Anthropic Python, `Anthropic` or `AsyncAnthropic` | `/capture/SOURCE_ID/anthropic` | Messages | `anthropic` |
+| Google `google-genai` | `/capture/SOURCE_ID/gemini` | `generateContent`, `streamGenerateContent` | set up in the client |
+| AWS `boto3` (`bedrock-runtime`) | `/capture/SOURCE_ID/bedrock/REGION` | `InvokeModel`, `Converse`, `ConverseStream` | set up in the client |
 
-The existing provider SDK makes the request. The generated helper configures its
-base URL and headers. Start with [Set up with your coding agent](/agent-setup).
+The existing provider SDK makes the request. For OpenAI and Anthropic the generated
+helper configures its base URL and headers — start with
+[Set up with your coding agent](/agent-setup). Gemini and Bedrock are configured in
+the client itself; see [Gemini and Bedrock](/client-integration#gemini-and-bedrock).
 
 ## Authentication and grouping
 
@@ -62,9 +66,15 @@ find an empty dataset.
 ## Boundaries
 
 The current dashboard connection and setup CLI do not provide OpenAI Responses,
-Realtime, WebSockets, Fireworks or arbitrary OpenAI-compatible upstreams. Google Gemini
-and Amazon Bedrock are captured through the self-hosted gateway instead — see
-[Gemini and Bedrock](/gemini-and-bedrock). A Python wrapper does not make calls in a JavaScript or native child
+Realtime, WebSockets, Fireworks or arbitrary OpenAI-compatible upstreams. Google Gemini and
+Amazon Bedrock connect through the dashboard — see
+[Gemini and Bedrock](/client-integration#gemini-and-bedrock).
+
+**Bedrock with SigV4 access keys cannot use the dashboard connection.** A SigV4
+signature covers the `Host` header, so it is rejected by AWS once a request reaches it
+through anything else. Use a Bedrock API key instead. If your application must
+authenticate with access keys, that case needs the self-hosted capture gateway, which
+forwards the exact bytes a signature requires — ask ReasonBlocks for it. A Python wrapper does not make calls in a JavaScript or native child
 process compatible; configure the process that actually sends the request.
 
 For a trained full-agent release, use **non-streaming** requests with text and
@@ -77,5 +87,5 @@ before enabling a release.
 An older generated connection should follow
 [the migration procedure](/agent-setup#migrate-an-older-generated-connection).
 
-The sequence number `x-rb-seq` is read by the self-hosted gateway, where a gap in a task's
-numbering leaves the run unproven. The dashboard connection groups by `x-rb-run` alone.
+The dashboard connection groups a task's calls by `x-rb-run`. The sequence number
+`x-rb-seq` is sent so a task's calls stay in order, and is not currently read.

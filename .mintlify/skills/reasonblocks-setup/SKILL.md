@@ -40,7 +40,7 @@ Use the exact HTTPS source URL and key issued in **Data**. Current support is:
 Do not invent a source URL, treat `rb_live_` organization/API keys as capture keys or
 silently switch provider/API to fit this list. Responses, Fireworks and arbitrary
 upstreams are outside this dashboard setup. Gemini and Bedrock are captured through the
-self-hosted gateway instead: https://docs.reasonblocks.com/gemini-and-bedrock.md
+dashboard with client-side setup: https://docs.reasonblocks.com/client-integration.md#gemini-and-bedrock
 
 Account sign-in and source/key creation currently happen in the dashboard.
 Capture keys expire after seven days; rotation invalidates the previous key.
@@ -87,10 +87,9 @@ Importing the generated helper installs labelling on supported HTTP transports
 and adds the configured capture host to the allowlist. `RBTRACE_HOSTS` entries
 without a leading dot match exact hosts; `.example.com` matches subdomains.
 Every model call the provider SDK makes then carries `x-rb-run` and `x-rb-seq`.
-Do not add a manual `rbtrace.client.install()` call on the dashboard connection; the
-generated helper does it on import. (A gateway connection has no generated helper and
-does call `install()` directly — that is a different setup, at
-https://docs.reasonblocks.com/gemini-and-bedrock.md) The dashboard groups a task's
+Do not add a manual `rbtrace.client.install()` call; the generated helper does it on
+import. (Gemini and Bedrock do not use the helper at all -- their client is configured
+directly, as the Data page shows.) The dashboard groups a task's
 calls by `x-rb-run`, and one `x-rb-run` is one training task; it does not
 currently read `x-rb-seq`, which orders a task's calls. The labels help group
 and order requests. They do not establish complete capture or a replayable
