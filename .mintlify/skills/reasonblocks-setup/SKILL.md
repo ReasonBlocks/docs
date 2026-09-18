@@ -2,7 +2,7 @@
 name: reasonblocks-setup
 description: "Connect or migrate a Python agent to ReasonBlocks dashboard capture, preserve task boundaries, verify the local setup, and guide the improvement cycle: assess data, recommend training, review training progress, test candidate models and recommend adoption or further collection. Use when integrating ReasonBlocks or working on a ReasonBlocks model's lifecycle."
 metadata:
-  compatibility: Client setup requires Python 3.10 or newer, the published rbtrace 1.1.1 and an existing OpenAI or Anthropic Python SDK. Lifecycle reviews can use existing dashboard reports without the setup CLI.
+  compatibility: Client setup requires Python 3.10 or newer, the published rbtrace 1.2.1 and an existing OpenAI or Anthropic Python SDK. Lifecycle reviews can use existing dashboard reports without the setup CLI.
 ---
 
 # ReasonBlocks setup
@@ -16,7 +16,7 @@ in the dashboard. This skill covers an active working session. It does not sched
 background checks or imply that the agent continues monitoring after the session ends.
 
 Read the [setup guide](https://docs.reasonblocks.com/agent-setup.md) when installing
-or migrating the client. Install the published `rbtrace==1.1.1` in the application's
+or migrating the client. Install the published `rbtrace==1.2.1` in the application's
 environment and verify its commands there. Do not claim a command is available
 until it runs in that environment.
 
@@ -48,7 +48,7 @@ Connecting and ordinary capture require no sandbox or environment snapshot.
 
 ## Install and initialize
 
-Use the project's package manager and record `rbtrace==1.1.1` in its dependency
+Use the project's package manager and record `rbtrace==1.2.1` in its dependency
 manifest. Install it into the application environment; a global
 or `uvx` tool environment alone is insufficient.
 

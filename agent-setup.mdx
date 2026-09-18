@@ -15,8 +15,8 @@ a small **Python integration helper** that connects your existing client; and an
 Python client library—the provider's SDK—continues making model requests.
 
 <Note>
-The CLI and helper are available on PyPI in `rbtrace==1.1.1`. This version adds
-automatic run labelling when you import the generated helper. If you already use
+The CLI and helper are available on PyPI in `rbtrace==1.2.1`. It labels runs
+automatically when you import the generated helper. If you already use
 a generated `1.1.0` connection, follow
 [Migrate an older generated connection](#migrate-an-older-generated-connection)
 to update it while preserving a backup of the original files.
@@ -42,13 +42,13 @@ rotating a key invalidates the previous one.
 Use your project's package manager. For uv:
 
 ```bash
-uv add rbtrace==1.1.1
+uv add rbtrace==1.2.1
 ```
 
 For a pip-managed environment:
 
 ```bash
-python -m pip install rbtrace==1.1.1
+python -m pip install rbtrace==1.2.1
 ```
 
 Record the dependency in the existing manifest or requirements file. Use the

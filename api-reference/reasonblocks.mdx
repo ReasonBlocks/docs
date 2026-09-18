@@ -5,8 +5,8 @@ description: "Source URLs, environment variables and the Python helper used by t
 
 This reference covers the dashboard capture connection. For installation, use
 [Set up with your coding agent](/agent-setup). The CLI and helper ship in
-`rbtrace==1.1.1` on PyPI; `1.1.1` adds automatic run labelling on import and the
-`migrate` upgrade path for generated `1.1.0` connections.
+`rbtrace==1.2.1` on PyPI. It labels runs automatically on import, and `migrate`
+upgrades generated `1.1.0` connections.
 
 ## Source configuration
 
@@ -102,7 +102,7 @@ the helper's actual directory for `--path`.
 
 `python -m rbtrace migrate` converts an older generated gateway connection when
 given a real dashboard capture URL, and upgrades an unmodified generated `1.1.0`
-connection to the `1.1.1` helper when given its existing URL. It backs up the
+connection to the current helper when given its existing URL. It backs up the
 original files under `.reasonblocks/backups/` first. See
 [migration](/agent-setup#migrate-an-older-generated-connection) for backup
 behavior, customized helpers and the required application changes.
