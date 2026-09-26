@@ -3,13 +3,53 @@ title: "Integrating your agent"
 description: "Connect your existing OpenAI, Anthropic, Gemini or Bedrock Python client to dashboard capture and keep each task's calls grouped together."
 ---
 
-The current connection uses a source URL from **Data** and explicit request
-headers. Your existing provider SDK continues making calls and your application
-continues executing tools. OpenAI and Anthropic use the generated helper below;
-Gemini and Bedrock are set up [directly in the client](#gemini-and-bedrock).
+Use one source URL and one ReasonBlocks server key copied from **Data**. Keep them
+through recording, training and supported serving after you approve a release.
+Your provider SDK, original model ID and tool loop stay in your application.
+The ReasonBlocks key does not replace your provider credential.
 
-Use [Set up with your coding agent](/agent-setup) to generate the helper. The CLI
-and helper ship in `rbtrace==1.2.1` on PyPI.
+## Existing Anthropic or OpenAI client
+
+Set your client's `base_url` to the source URL and add the
+`x-reasonblocks-key` header from `REASONBLOCKS_API_KEY`. Anthropic uses
+`https://api.reasonblocks.com/capture/SOURCE_ID/anthropic`; OpenAI Chat Completions
+uses `https://api.reasonblocks.com/capture/SOURCE_ID/openai/v1`.
+
+You do not need a new package or helper to use these URLs. Copy the
+[Quickstart example](/quickstart#2-keep-one-source-url-and-key). Use a unique
+`x-rb-run` for each complete task and reuse it for the task's model calls. For a
+long-lived client, pass `extra_headers={"x-rb-run": task_id}` per call. You can add
+`x-rb-snapshot-id` when you have a real starting snapshot for full-agent training.
+Keep the source URL and authentication headers unchanged when enabling a release.
+
+## Optional source-based helper
+
+Install `rbtrace==1.3.0` if you prefer automatic run labeling and source discovery.
+This helper is optional for a directly configured Anthropic or OpenAI client.
+Native Bedrock uses it to retain the existing IAM-signed AWS transport.
+
+```python
+from rbtrace import Connection
+from anthropic import Anthropic
+
+rb = Connection(source_id="SOURCE_ID")  # reads REASONBLOCKS_API_KEY
+client = Anthropic(**rb.client_kwargs("anthropic"))
+
+with rb.run("your-unique-task-id"):
+    # Execute the complete agent task using client, including tool calls.
+    pass
+```
+
+Use `OpenAI(**rb.client_kwargs("openai"))` for OpenAI. Your normal provider key
+stays in its existing environment variable. Give each concurrent or successive
+task its own run scope. Call `rb.status()` for remote recording status and
+`rb.diagnostics()` for local delivery information. The **Manage connection**
+panel checks server status automatically.
+
+## Existing generated helper
+
+Existing `reasonblocks_setup.py` integrations remain supported. The CLI and
+helper workflow is documented in [Set up with your coding agent](/agent-setup).
 
 ## Client construction
 
@@ -43,66 +83,63 @@ of changing `sys.path`.
 
 ## Gemini and Bedrock
 
-Google Gemini and Amazon Bedrock connect the same way: point the SDK at the source
-URL from **Data** and send the capture key and task header with each call. Their
-SDKs take those settings differently from the OpenAI and Anthropic clients, so the
-setup is written out in full. It is the same code **Data** shows for the source.
+Bedrock uses its native AWS client and IAM credentials. Gemini uses the hosted
+source URL; the Connection helper supplies its URL and request headers.
 
 ### Gemini
 
 ```python
-import os
-from uuid import uuid4
 from google import genai
+from rbtrace import Connection
 
-run_id = str(uuid4())  # reuse for every call in one task
-client = genai.Client(
-    api_key=os.environ["GEMINI_API_KEY"],
-    vertexai=False,  # a Gemini API key; ignore GOOGLE_GENAI_USE_VERTEXAI
-    http_options={
-        "base_url": "https://api.reasonblocks.com/capture/SOURCE_ID/gemini",
-        "headers": {
-            "x-reasonblocks-key": os.environ["RB_CAPTURE_KEY"],
-            "x-rb-run": run_id,
-        },
-    },
-)
+rb = Connection(source_id="SOURCE_ID")
+client = genai.Client(**rb.client_kwargs("gemini"))
+
+with rb.run("your-unique-task-id"):
+    # Execute your existing agent using client.
+    pass
 ```
 
-`generateContent` and `streamGenerateContent` are captured, streaming included,
-along with tool declarations and tool calls. Tool calls carry an id only on
-Gemini 3; on earlier models a call is matched to its result by name and order,
-which is less certain when one turn calls the same function several times.
+Keep `GEMINI_API_KEY` in its existing secret environment. The helper supplies the
+source endpoint and authentication headers. The hosted Gemini route records and
+forwards provider calls; it does not imply optimized-model serving compatibility.
 
 ### Bedrock
 
-A Bedrock source is issued for one region, and the region is part of its URL.
-boto3 has no constructor argument for an extra header, so the capture key and task
-header are added to each request with an event hook:
+Keep your existing boto3 client configuration, including region, retries and IAM
+credentials. Instrument it after construction:
 
 ```python
-import os
-from uuid import uuid4
 import boto3
+from rbtrace import Connection
 
-run_id = str(uuid4())  # reuse for every call in one task
-client = boto3.client(
-    "bedrock-runtime",
-    region_name="us-east-1",
-    endpoint_url="https://api.reasonblocks.com/capture/SOURCE_ID/bedrock/us-east-1",
-)
+rb = Connection(source_id="SOURCE_ID")
+client = boto3.client("bedrock-runtime", region_name="us-east-1")
+rb.instrument_bedrock(client, serving=True)
 
-def _reasonblocks(request, **_):
-    request.headers.add_header("x-reasonblocks-key", os.environ["RB_CAPTURE_KEY"])
-    request.headers.add_header("x-rb-run", run_id)
+with rb.run("your-unique-task-id"):
+    # Your existing invoke_model, converse or streaming calls use client.
+    pass
 
-client.meta.events.register("request-created.bedrock-runtime.*", _reasonblocks)
+print(rb.status())
 ```
 
-Authenticate with a **Bedrock API key**, which boto3 uses when
-`AWS_BEARER_TOKEN_BEDROCK` is set. SigV4 access keys are not supported here — see
-[Boundaries](/endpoint-compatibility#boundaries). `InvokeModel`, `Converse` and
-`ConverseStream` are captured, including tool use, tool results and usage.
+Native capture does not need an Anthropic key or Bedrock bearer key. AWS requests
+keep their existing signing and endpoint. The source receives capture events;
+AWS credentials remain with the native client.
+
+With `serving=True`, an approved rollout may serve compatible nonstreaming
+requests. An explicit upstream decision uses your original Bedrock operation.
+A candidate error or uncertain dispatch is not automatically retried against
+Bedrock. Set `serving=False` for capture only.
+
+Streaming calls stay upstream and are observed while your application consumes
+them. They do not become optimized-model streams. Incomplete consumption prevents
+a complete capture event; check `rb.diagnostics()` for local delivery failures.
+
+Legacy applications can still use the hosted
+`/capture/SOURCE_ID/bedrock/REGION` relay with a Bedrock bearer/API key.
+That relay does not support SigV4; the native SDK integration above does.
 
 ## Run identity and sequence numbers
 

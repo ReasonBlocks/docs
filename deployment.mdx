@@ -1,20 +1,32 @@
 ---
 title: "Deploy your connected application"
-description: "Ship the generated helper, connection configuration and runtime secrets with the Python application that makes model calls."
+description: "Deploy the source connection SDK and runtime secrets with the Python application that makes model calls."
 ---
 
-Connect to the exact HTTPS source URL returned in **Data**. Your application
-keeps using its OpenAI or Anthropic Python client library and provider credential.
+Use the source URL and `REASONBLOCKS_API_KEY` from your server secret store with
+your existing Anthropic or OpenAI SDK. The same connection supports recording and
+approved serving; you do not need to deploy a different client after training.
+Keep your provider client and credential. Native Bedrock keeps IAM
+authentication in the existing boto3 client.
 See [Quickstart](/quickstart) to create the connection.
 
 ## Application files
+
+Directly configured Anthropic and OpenAI clients need no ReasonBlocks helper
+package. Keep their source URL and headers in application configuration.
+
+For `Connection(source_id="SOURCE_ID")`, deploy the application code and
+`rbtrace==1.3.0`; no generated config file is needed. Set `REASONBLOCKS_API_KEY`
+at runtime. Pin the package version used in your tests.
+
+The rest of this section applies to existing generated helpers.
 
 Deploy the generated `reasonblocks_setup.py` and its adjacent
 `.reasonblocks/config.json` with the application. Include the hidden config
 directory explicitly in wheel package data or image copy rules. The generated
 `.reasonblocks/SETUP.md` is optional at runtime.
 
-Install `rbtrace==1.2.1` from PyPI into the application's Python environment
+Install `rbtrace==1.3.0` from PyPI into the application's Python environment
 and record the version in its dependency manifest. That release contains the
 CLI and the helper's automatic run labelling.
 
@@ -24,15 +36,17 @@ entrypoint from a working directory outside the repository. See
 
 ## Runtime secrets
 
-Supply `REASONBLOCKS_CAPTURE_KEY` through the deployment's secret environment.
+For direct clients or `Connection`, supply `REASONBLOCKS_API_KEY` through the deployment's secret environment.
+For an existing generated helper, use `REASONBLOCKS_CAPTURE_KEY`.
 The existing `RB_CAPTURE_KEY` alias is accepted; if both names are set, their
 values must agree. Keep the provider credential in its normal secret location.
 Do not put either key in generated files or the image.
 
 The capture service receives model requests and the provider credential needed
-to forward them. Review the workflow content you send. Capture keys expire after
-seven days; rotating a key in **Data** invalidates the previous key, so update
-connected applications as part of that change.
+to forward them. Native Bedrock capture keeps AWS authentication local. Review the
+workflow content you send. New server keys have no scheduled expiration by default;
+optional expirations and existing keys still expire as shown in **API Keys**.
+Legacy source-key rotation provides a 24-hour overlap, bounded by the old key's expiry.
 
 ## Tasks and verification
 
@@ -43,6 +57,8 @@ handle many tasks. See [Integrating your agent](/client-integration).
 Run `doctor` in the deployed Python environment with the configured helper path.
 It is a local check, not a remote credential or capture test. Confirm source
 records after a real workflow before claiming the deployment is capturing correctly.
+With `Connection`, call `rb.status()` or check the live status in **Manage connection**.
+Review recorded requests separately from training examples and exclusions.
 Normal provider charges apply to those calls.
 
 ## Training environment

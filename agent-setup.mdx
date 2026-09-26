@@ -9,18 +9,41 @@ Give your coding agent this instruction:
 Read https://docs.reasonblocks.com/agent-setup.md and integrate ReasonBlocks into this project.
 ```
 
-ReasonBlocks provides a **CLI**, a command-line tool that generates configuration;
-a small **Python integration helper** that connects your existing client; and an
-**agent skill** with the setup instructions. Your existing OpenAI or Anthropic
-Python client library—the provider's SDK—continues making model requests.
+For an existing Anthropic or OpenAI client, use the stable source URL and header
+from the [Quickstart](/quickstart). No ReasonBlocks package installation is
+required. Keep that URL and key when you later enable a supported release in the
+dashboard; preserve the existing provider credential, model and task loop.
 
-<Note>
-The CLI and helper are available on PyPI in `rbtrace==1.2.1`. It labels runs
-automatically when you import the generated helper. If you already use
-a generated `1.1.0` connection, follow
-[Migrate an older generated connection](#migrate-an-older-generated-connection)
-to update it while preserving a backup of the original files.
-</Note>
+## Optional Connection helper
+
+For automatic run labels or native Bedrock, install `rbtrace==1.3.0` in the application's Python
+environment. Create a source and a persistent server key in **Data**. Store it as
+`REASONBLOCKS_API_KEY`; leave the provider key in its existing secret environment.
+The server key must allow Capture and, for optimized serving, Inference.
+
+```python
+from rbtrace import Connection
+from anthropic import Anthropic
+
+rb = Connection(source_id="SOURCE_ID")
+client = Anthropic(**rb.client_kwargs("anthropic"))
+
+with rb.run("your-unique-task-id"):
+    # Execute the complete task using client, including tool calls.
+    pass
+
+print(rb.status())
+```
+
+Replace `SOURCE_ID` with the selected source's ID. Copying the dashboard snippet
+fills it in. Use the OpenAI or Gemini helper for those clients. For Bedrock,
+use `rb.instrument_bedrock(existing_boto3_client, serving=True)`; keep the client's
+AWS credentials and endpoint. See [Integrating your agent](/client-integration).
+
+Verify the real entrypoint. **Manage connection** reports recording, training
+eligibility and failures automatically. No header inspection is required. The
+sections below cover the existing generated-helper CLI workflow and migration.
+Existing helpers remain supported.
 
 ## What you need
 
@@ -34,21 +57,22 @@ application and collect its normal workflow calls. Training later needs a way to
 reset and exercise your tools safely; see [Preparing for training](#preparing-for-training).
 
 The CLI configures a connection already issued by the dashboard. It does not
-create an account or invent a source URL. Capture keys expire after seven days;
-rotating a key invalidates the previous one.
+create an account or invent a source URL. New server keys and source capture keys have no scheduled expiration by default.
+Existing expiration dates remain valid. Source-key rotation allows a 24-hour overlap,
+bounded by the old key's expiry.
 
 ## 1. Install into the application environment
 
 Use your project's package manager. For uv:
 
 ```bash
-uv add rbtrace==1.2.1
+uv add rbtrace==1.3.0
 ```
 
 For a pip-managed environment:
 
 ```bash
-python -m pip install rbtrace==1.2.1
+python -m pip install rbtrace==1.3.0
 ```
 
 Record the dependency in the existing manifest or requirements file. Use the
@@ -242,7 +266,7 @@ does not edit arbitrary application code or create dashboard credentials. Re-run
 
 Migrate only a compatible OpenAI Chat Completions or Anthropic Messages client.
 Do not switch an application to a different provider or API as part of setup. A Gemini
-or Bedrock application does not use this helper; it is configured in the client — see
+or Bedrock application can use the source-based Connection interface above — see
 [Gemini and Bedrock](/client-integration#gemini-and-bedrock). A Fireworks or OpenAI
 Responses application needs a separately planned compatibility change.
 

@@ -7,29 +7,28 @@ ReasonBlocks captures the model calls in your agent's workflow and uses your
 application's tasks to train and evaluate a smaller model. You keep your provider
 credentials and your existing Python client library throughout.
 
-OpenAI, Anthropic, Google Gemini and Amazon Bedrock applications all connect the same
-way: a data source in the dashboard, and a small generated helper. Gemini and Bedrock have
-[their own setup section](/client-integration#gemini-and-bedrock), because their SDKs
-take the connection settings differently.
+OpenAI, Anthropic, Google Gemini and Amazon Bedrock applications connect through
+a dashboard data source. Anthropic and OpenAI clients use the stable source URL
+directly; native Bedrock uses the Python SDK with your existing IAM credentials. Existing generated
+helpers remain supported. Provider-specific examples are in
+[Integrating your agent](/client-integration).
 
 ## Start with capture
 
-For a Gemini or Bedrock application, read
-[Gemini and Bedrock](/client-integration#gemini-and-bedrock) — you create the source
-the same way, and that section shows the client setup.
+Create a source in **Data**, generate a persistent server key, and copy the
+source-preselected setup snippet. Store the key as `REASONBLOCKS_API_KEY` in your
+server's secret environment. Keep the same URL and ReasonBlocks key when moving
+from recording to an approved, supported release. Your provider credential stays
+in place. The optional Connection helper and native Bedrock integration use
+`rbtrace==1.3.0`; a directly configured Anthropic client needs no helper upgrade.
 
-Create a source in **Data**, copy its capture URL and key, and ask your coding
-agent to read the [setup guide](/agent-setup) — its plain-text copy is
-[/agent-setup.md](/agent-setup.md) — and integrate ReasonBlocks into the project.
-The exact instruction to paste is at the top of that guide.
+Your coding agent can follow the [setup guide](/agent-setup), also available as
+[/agent-setup.md](/agent-setup.md). Existing generated helpers and their migration
+workflow remain documented there.
 
-The [setup CLI and skill](/agent-setup) generate a small Python helper and project
-configuration. Your coding agent connects the helper to the existing client and
-labels each task's calls. The CLI and helper ship in `rbtrace==1.2.1` on PyPI;
-the setup guide has the install commands.
-
-Capture does not require a sandbox or start training. Normal provider charges
-continue to apply when your application runs.
+**Manage connection** automatically reports recording, training eligibility,
+exclusions, failures and recent activity. Capturing does not require a sandbox
+or start training. Normal provider charges continue when your application runs.
 
 ## Train when your application is ready
 

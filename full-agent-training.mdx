@@ -20,19 +20,20 @@ for the evidence and decisions at each stage.
 ## 1. Connect your data
 
 Your coding agent can prepare the Python client integration using
-[the setup CLI and skill](/agent-setup). That guide covers installing
-`rbtrace==1.2.1` and the source credentials needed before setup.
+[the setup guide](/agent-setup). Anthropic and OpenAI clients can use their source
+URL directly. The optional helper and native Bedrock integration use `rbtrace==1.3.0`.
 
-In **Data**, create a source and copy its capture URL and capture key. Keep your
-existing provider API key. Send the capture key in `x-reasonblocks-key`, alongside
+In **Data**, create a source and copy its source URL and server key. Keep your
+existing provider API key. Send the ReasonBlocks key in `x-reasonblocks-key`, alongside
 your normal provider authentication. Use the exact URL returned for your source:
 
 - OpenAI Chat Completions: `/capture/SOURCE_ID/openai/v1` as the SDK base URL.
 - Anthropic Messages: `/capture/SOURCE_ID/anthropic` as the SDK base URL.
 
 Do not build a URL from a host and these paths; the source's URL in **Data** is
-the one to use. Treat the capture key as a secret; it expires after seven days
-and can be rotated in **Data**.
+the one to use. Treat the key as a server secret. New keys have no scheduled
+expiration by default. Existing keys retain their original expiry. Source keys
+can be rotated in **Data** with a 24-hour overlap.
 
 For every workflow execution, each model call carries:
 
@@ -73,8 +74,8 @@ Do not include hidden expected outcomes in the conversation, tool definitions or
 snapshot names. Multiple rows from a long conversation are not independent tasks.
 The default recipe needs at least **32 independent training tasks after** separate
 calibration and evaluation groups have been reserved.
-The current source capture limit is 512 requests, and each captured request
-body is capped at 2 MiB. For longer workflows or a larger collection, upload
+Each source accepts up to 512 training examples, separately from the recorded
+exchange archive. Captured request bodies are capped at 2 MiB. For longer workflows or a larger collection, upload
 curated initial-task JSONL instead; the upload limit is 50 MiB.
 
 ## 2. Connect a test environment once
@@ -176,6 +177,9 @@ Select a traffic share and confirm inference spending in **Training**. Keep the
 same capture URL, full history and stable `x-rb-run`. The rollout share selects
 which tasks enter the candidate system; the guard's teacher escalation rate is
 a separate measurement.
+Keep the same ReasonBlocks key, provider credential, original model ID and client.
+Enabling a supported release changes routing on the server; it does not require
+switching your application to a separate inference URL.
 
 The guard checks customer coverage, tool validity, repeated calls, observed
 errors and calibrated limits. It can escalate unfamiliar tasks to the frozen
