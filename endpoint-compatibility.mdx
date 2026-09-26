@@ -1,91 +1,100 @@
 ---
 title: "Endpoint compatibility"
-description: "Current dashboard capture supports OpenAI Chat Completions and Anthropic Messages with the source URLs issued in Data."
+description: "Authentication, recording, request parameters and serving boundaries for connected sources."
 ---
 
-Use the complete HTTPS URL issued for a source in **Data**. The source ID and
-provider path are part of that URL; do not replace them with a guessed host or
-a generic provider prefix.
+Copy the exact provider base URL from **Data**, or optionally use
+`Connection(source_id="SOURCE_ID")` to resolve it. Keep that URL and ReasonBlocks
+key when you enable supported serving; no separate inference URL is needed. The source ID is part of the
+URL. An Anthropic SDK base URL ends in `/anthropic`; its Messages request appends
+`/v1/messages`.
 
-| Client | Source base URL ends in | Model endpoint | Setup CLI provider |
-| --- | --- | --- | --- |
-| OpenAI Python, `OpenAI` or `AsyncOpenAI` | `/capture/SOURCE_ID/openai/v1` | Chat Completions | `openai` |
-| Anthropic Python, `Anthropic` or `AsyncAnthropic` | `/capture/SOURCE_ID/anthropic` | Messages | `anthropic` |
-| Google `google-genai` | `/capture/SOURCE_ID/gemini` | `generateContent`, `streamGenerateContent` | set up in the client |
-| AWS `boto3` (`bedrock-runtime`) | `/capture/SOURCE_ID/bedrock/REGION` | `InvokeModel`, `Converse`, `ConverseStream` | set up in the client |
+| Client | Connection | Provider authentication |
+| --- | --- | --- |
+| OpenAI / AsyncOpenAI | `/capture/SOURCE_ID/openai/v1` base URL and source headers, or optional helper | Your OpenAI API key |
+| Anthropic / AsyncAnthropic | `/capture/SOURCE_ID/anthropic` base URL and source headers, or optional helper | Your Anthropic API key |
+| boto3 Bedrock runtime | `rb.instrument_bedrock(client, serving=True)` | Your existing AWS credential chain |
+| Google `google-genai` | `rb.client_kwargs("gemini")` | Your Gemini API key |
+| Legacy Bedrock hosted relay | `/capture/SOURCE_ID/bedrock/REGION` | Bedrock bearer/API key |
 
-The existing provider SDK makes the request. For OpenAI and Anthropic the generated
-helper configures its base URL and headers — start with
-[Set up with your coding agent](/agent-setup). Gemini and Bedrock are configured in
-the client itself; see [Gemini and Bedrock](/client-integration#gemini-and-bedrock).
+## Authentication and keys
 
-## Authentication and grouping
+`REASONBLOCKS_API_KEY` supplies the server credential. An `rb_live_` key needs
+Capture permission to record or resolve a source, and Inference permission to
+use trained-model serving. A source restriction limits the key to that source.
+The prefix alone does not identify its permissions. Existing `rbcap_` source connection keys remain supported for capture and the
+source's existing proxy rollout. They remain separate from your provider credential.
 
-Use your normal provider authentication alongside `x-reasonblocks-key`, carrying
-the dashboard-issued capture key. The generated helper labels every call with
-`x-rb-run` (the task) and `x-rb-seq` (the call's number within it); reuse the same
-`x-rb-run` across every call in one task. A process that handles more than one
-task must name each task with `run_headers()` or an explicit `rbtrace.client.run()`
-scope, or every task shares one `x-rb-run`. The dashboard does not read `x-rb-seq`.
-A later full-agent training workflow also requires `x-rb-snapshot-id` naming a
-real repeatable starting state. Ordinary capture does not require that snapshot.
+New keys can have no scheduled expiration. Existing expiration dates still apply.
+Rotate legacy source keys with a 24-hour overlap, or revoke them immediately when
+needed. Manage `rb_live_` credentials in **API Keys**.
 
-See the [integration reference](/api-reference/reasonblocks) for helper and
-header details.
+## Recording and training eligibility
 
-## Whether a call was captured
+Recording a request and admitting it to training are separate outcomes. The
+connection status shows **Recorded requests**, **Training examples**, **Excluded
+from training**, and **Failed requests**, with recent activity and exclusion reasons.
+Keep **Manage connection** open for automatic updates, or call `rb.status()`.
 
-A request the recorder cannot represent is still forwarded to your provider and still
-answered normally — being unrepresentable never costs you the call. It does mean that
-call produces no training row, so the response says which happened.
+Supported exchanges retain provider request and response information subject to
+capture size, privacy and completeness limits. The recent index shows up to 256
+recordings, while cumulative status continues to count new exchanges. Leaving
+the recent index does not delete an exchange or stop new capture. Each backend
+exchange has a 4 MiB serialized limit; the native SDK and HTTP gateway apply a
+smaller 2 MiB request limit. Training examples retain their separate source limits.
+See [Recorded exchanges](/api-reference/reasonblocks#recorded-exchanges) for
+pagination and retrieval by ID. A request excluded from training
+can still reach its original provider and be recorded. An interrupted response,
+provider error or delivery failure appears separately; a training exclusion is
+not proof that the original provider call failed.
 
-(Two limits are refused before forwarding rather than passed on: a request body over
-2 MB, and a malformed `x-rb-snapshot-id`. Those return an error instead of a model
-answer.)
+## Anthropic request options
 
-| Response header | Meaning |
-| --- | --- |
-| `x-reasonblocks-capture: accepted` | The request was representable, so it is eligible to become a row |
-| `x-reasonblocks-capture: skipped` | Forwarded and answered, but not recorded |
-| `x-reasonblocks-capture-reason` | Present only when skipped: why, as a fixed label such as `unsupported_request_content` |
+| Option | Original provider call | Optimized serving |
+| --- | --- | --- |
+| `cache_control` | Preserved for the original provider | Does not promise equivalent prompt-cache behavior on the trained model; unsupported combinations stay upstream |
+| `temperature` | Preserved for the original provider | Used only when compatible with the trained model and approved serving configuration |
+| `thinking` | Preserved, including provider response blocks | Enabled thinking stays upstream; current trained-model serving does not reproduce provider thinking |
 
-`accepted` describes the request only, and is set before the response streams: a response
-can still fail to yield a usable reference — a stream that ends early, for instance — and
-those appear in the pipeline's capture-gap report in **Data** rather than in a header. An
-error the connection itself returns carries no capture header at all.
+Provider and model restrictions still apply. Recording support does not imply
+that every request is suitable for training or that a trained model reproduces
+a provider feature. Top-level and block-level Anthropic cache annotations do not by themselves exclude
+a supported request from training. Enabled thinking is recorded but excluded from
+training with `thinking_not_trainable`. The connection status reports this decision.
 
-What gets skipped is ordinary, which is why it is worth checking. Neither list below is
-exhaustive — the connection accepts a fixed set of request options and skips anything
-else. On OpenAI: options outside the supported set (`presence_penalty`,
-`frequency_penalty`, `n`, `logprobs` among them), and any non-text message content such as
-an image. On Anthropic: `stop_sequences`, `top_k`, enabled extended thinking, and likewise
-any message content that is not text, a tool use or a tool result. One such option set globally
-means no rows at all, so check this header once when you connect rather than waiting to
-find an empty dataset.
+## Bedrock and fallback
+
+The SDK instruments the existing boto3 client locally. It keeps IAM signing,
+region and native AWS transport in place, then sends capture events to the source.
+An Anthropic API key is not required. For an approved rollout, `serving=True`
+allows supported nonstreaming calls to ask the server for a candidate response.
+Only an explicit upstream decision invokes the original Bedrock operation.
+An uncertain or failed candidate dispatch is not silently replayed as a second
+paid provider call.
+
+`InvokeModelWithResponseStream` and `ConverseStream` remain native upstream
+streams. Recording observes their consumption; it does not turn them into
+candidate token streams. Incomplete consumption prevents a complete capture event;
+check `rb.diagnostics()` for local delivery failures. Use `serving=False` for capture only.
+
+The legacy hosted Bedrock relay still requires a bearer/API key. SigV4 is not
+supported through that relay because it changes the signed host. Use the native
+SDK integration for an existing IAM-authenticated client.
 
 ## Boundaries
 
-The current dashboard connection and setup CLI do not provide OpenAI Responses,
-Realtime, WebSockets, Fireworks or arbitrary OpenAI-compatible upstreams. Google Gemini and
-Amazon Bedrock connect through the dashboard — see
-[Gemini and Bedrock](/client-integration#gemini-and-bedrock).
+OpenAI Responses, Realtime, WebSockets and arbitrary compatible upstreams have
+separate integration requirements. A Python wrapper does not instrument calls
+made in JavaScript or native child processes.
 
-**Bedrock with SigV4 access keys cannot use the dashboard connection.** A SigV4
-signature covers the `Host` header, so it is rejected by AWS once a request reaches it
-through anything else. Use a Bedrock API key instead. If your application must
-authenticate with access keys, that case needs the self-hosted capture gateway, which
-forwards the exact bytes a signature requires — ask ReasonBlocks for it. A Python wrapper does not make calls in a JavaScript or native child
-process compatible; configure the process that actually sends the request.
-
-For a trained full-agent release, use **non-streaming** requests with text and
-ordinary function tools. Images, forced tool selection, strict tool schemas and
-other request controls have separate admission rules. Capture support alone does
-not establish trained-model serving support. Read the
+Hosted forwarding has request-size and authentication limits. Full-agent
+candidate serving has additional admission rules and uses nonstreaming requests;
+unsupported requests stay upstream before a candidate execution begins. Read the
 [full-agent serving contract](/full-agent-training#5-enable-the-reviewed-release)
 before enabling a release.
 
-An older generated connection should follow
-[the migration procedure](/agent-setup#migrate-an-older-generated-connection).
-
-The dashboard connection groups a task's calls by `x-rb-run`. The sequence number
-`x-rb-seq` is sent so a task's calls stay in order, and is not currently read.
+Create one run per complete task with `rb.run(task_id)`. Keep tool calls inside
+that scope. Snapshots are optional for ordinary recording; full-agent training
+requires a real repeatable starting state. Existing generated helpers and their
+`run_headers()` interface remain supported; see the
+[migration guide](/agent-setup#migrate-an-older-generated-connection).

@@ -1,59 +1,91 @@
 ---
 title: "Quickstart"
-description: "Create a data source, connect your existing OpenAI or Anthropic application and verify captured workflow calls."
+description: "Connect a source with one server key and verify recording automatically."
 ---
 
-Connect your application through a source in **Data**. You keep your provider key
-and existing client library. No sandbox is needed to begin capturing calls.
+Connect your existing application in **Data**. Keep your provider client and credentials.
+No sandbox is needed to record calls, and connecting does not start training.
 
-## 1. Create a source
+## 1. Create a source and server key
 
-In the ReasonBlocks dashboard, choose **Data**, create a data source and generate
-its connection key. Copy the complete HTTPS capture URL for your provider:
+In **Data**, create a source and open **Manage connection**. Choose your provider
+and **Generate server key**. The key has **Capture** and **Inference** permissions
+for this source. Leave expiration blank for a persistent key, or choose an expiration.
+Store the one-time secret as `REASONBLOCKS_API_KEY` on your server.
 
-- OpenAI Chat Completions: a URL ending in `/capture/SOURCE_ID/openai/v1`.
-- Anthropic Messages: a URL ending in `/capture/SOURCE_ID/anthropic`.
+An existing `rb_live_` key works when it has Capture permission and access to the
+source. Older keys may have Inference permission only; check **API Keys**.
+Legacy `rbcap_` source keys also remain supported. New source keys have no scheduled
+expiration, and rotation allows a 24-hour overlap, bounded by the old key's expiry.
+Existing keys retain their original expiration until you replace them.
 
-Use the URL actually returned by the dashboard. Keep its capture key in your
-application's secret environment as `REASONBLOCKS_CAPTURE_KEY`. Keys expire
-after seven days; rotating the connection key invalidates the previous one.
+## 2. Keep one source URL and key
 
-## 2. Let your coding agent connect the project
+Copy the setup code from **Manage connection**. Your existing Anthropic or OpenAI
+SDK connects directly; no ReasonBlocks helper installation is required. The same
+source URL and ReasonBlocks key are used for recording and supported serving after
+you approve a release. Keep your provider credential and original model ID.
 
-```text
-Read https://docs.reasonblocks.com/agent-setup.md and integrate ReasonBlocks into this project.
+```python
+import os
+from anthropic import Anthropic
+
+SOURCE_URL = "https://api.reasonblocks.com/capture/SOURCE_ID/anthropic"
+
+def client_for_task(task_id):
+    return Anthropic(
+        base_url=SOURCE_URL,
+        default_headers={
+            "x-reasonblocks-key": os.environ["REASONBLOCKS_API_KEY"],
+            "x-rb-run": task_id,
+        },
+        max_retries=0,
+    )
+
+client = client_for_task("your-unique-task-id")
+# Pass client to your existing agent, including its tool loop.
 ```
 
-The [setup guide](/agent-setup) covers installing the CLI, generating the helper,
-connecting your client and retaining a run ID across all calls in one task. A
-run is all the model calls in one task, labelled with one `x-rb-run` header.
+Keep `ANTHROPIC_API_KEY` in its usual environment variable. For OpenAI, use
+`OpenAI` and the source URL ending in `/openai/v1`. Use a unique `x-rb-run` for
+each complete task, including all model calls and tool execution. If you reuse a
+long-lived SDK client, pass the task's `x-rb-run` through `extra_headers` on each
+call instead of setting it as a client default.
 
-<Note>
-The setup CLI and helper are published on PyPI as `rbtrace==1.2.1`. It labels
-runs automatically when the generated helper is imported. If a project
-already has a generated `1.1.0` connection, `python -m rbtrace migrate` upgrades
-its helper in place, keeping the source URL and backing up the original files; see
-[Migrate an older generated connection](/agent-setup#migrate-an-older-generated-connection).
-</Note>
+For native Bedrock, install `rbtrace==1.3.0` once and instrument your existing
+boto3 client. Keep its IAM credential chain:
 
-## 3. Verify capture
+```python
+from rbtrace import Connection
 
-Run the local check, `python -m rbtrace doctor --path . --json`, in your
-application environment and test the actual entrypoint. When you run a real
-workflow, confirm that its records appear in **Data**. The local check verifies
-configuration and capture-key presence; it does not contact the service or
-validate credentials remotely.
+rb = Connection(source_id="SOURCE_ID")
+rb.instrument_bedrock(existing_boto3_client, serving=True)
+# Run each complete task inside with rb.run("your-unique-task-id").
+```
 
-Model calls use your provider account and incur its normal fees. See
-[Integrating your agent](/client-integration) for task boundaries and coverage.
+No Anthropic API key is required for native Bedrock calls. See
+[Integrating your agent](/client-integration) for native Bedrock behavior and
+[Set up with your coding agent](/agent-setup) for existing CLI integrations.
+
+## 3. Verify the connection automatically
+
+Run your application and keep **Manage connection** open. Its status refreshes
+without inspecting response headers. It shows recorded requests, training examples,
+training exclusions, failures, recent activity and connection-key expiration warnings.
+
+A request can be recorded while excluded from training. Open the reason in the
+connection status before changing your application. If you use the optional
+Connection helper, `rb.status()` reads server status and `rb.diagnostics()` reports
+local SDK delivery information.
+
+Normal provider fees apply to model calls. Status checks do not generate a model response.
 
 ## 4. Prepare training when ready
 
 Training needs representative tasks, a resettable test copy of your tools and
-data, and a way to evaluate completed tasks. Your coding agent can help build
-that connection once the application-specific details are available. Follow
+data, and a way to evaluate completed tasks. Follow
 [Train your complete agent](/full-agent-training) to prepare a plan and review
-the budget before authorizing paid work.
-
-Continue with [Work with your coding agent](/agent-workflow) to review data
-readiness, interpret training results and test a candidate before rollout.
+the budget before authorizing paid work. Enable a supported release in the
+dashboard when ready; your source URL, ReasonBlocks key and existing client stay
+the same. Continue with
+[Work with your coding agent](/agent-workflow) to review readiness and rollout.
