@@ -218,9 +218,9 @@ than creating a new run every time they ask for progress.
 
 Use the customer's authenticated dashboard or documented control API when
 available. Identify the source, pipeline/run, model release and report version
-being assessed. The capture key only authenticates capture; it does not grant
-permission to read dashboard data or control training. Do not extract browser
-session tokens or substitute provider/capture keys for control-plane access.
+being assessed. Capture and inference credentials do not grant permission to
+browse dashboard data or control training. Do not extract browser session tokens
+or substitute provider/server keys for signed-in management access.
 
 If current status is unavailable, ask for the relevant dashboard status or report
 and continue independent project work such as preparing tests. Distinguish a
