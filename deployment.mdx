@@ -16,8 +16,10 @@ Directly configured Anthropic and OpenAI clients need no ReasonBlocks helper
 package. Keep their source URL and headers in application configuration.
 
 For `Connection(source_id="SOURCE_ID")`, deploy the application code and
-`rbtrace==1.3.0`; no generated config file is needed. Set `REASONBLOCKS_API_KEY`
+`rbtrace==1.3.1`; no generated config file is needed. Set `REASONBLOCKS_API_KEY`
 at runtime. Pin the package version used in your tests.
+Existing `1.3.0` deployments remain compatible; upgrading to `1.3.1` adds native
+Bedrock dispatch diagnostics and requires no connection or credential changes.
 
 The rest of this section applies to existing generated helpers.
 
@@ -26,7 +28,7 @@ Deploy the generated `reasonblocks_setup.py` and its adjacent
 directory explicitly in wheel package data or image copy rules. The generated
 `.reasonblocks/SETUP.md` is optional at runtime.
 
-Install `rbtrace==1.3.0` from PyPI into the application's Python environment
+Install `rbtrace==1.3.1` from PyPI into the application's Python environment
 and record the version in its dependency manifest. That release contains the
 CLI and the helper's automatic run labelling.
 
@@ -51,7 +53,8 @@ Legacy source-key rotation provides a 24-hour overlap, bounded by the old key's 
 ## Tasks and verification
 
 Wire the helper into the process that makes the actual model calls. Create one
-run ID per task and reuse its headers for every step, including in workers that
+run ID per top-level user turn, from the first model call through tool execution
+and the final answer. Start a new ID for the next turn, including in workers that
 handle many tasks. See [Integrating your agent](/client-integration).
 
 Run `doctor` in the deployed Python environment with the configured helper path.

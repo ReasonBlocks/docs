@@ -21,7 +21,8 @@ for the evidence and decisions at each stage.
 
 Your coding agent can prepare the Python client integration using
 [the setup guide](/agent-setup). Anthropic and OpenAI clients can use their source
-URL directly. The optional helper and native Bedrock integration use `rbtrace==1.3.0`.
+URL directly. The optional helper and native Bedrock integration use `rbtrace==1.3.1`.
+Existing `1.3.0` integrations remain compatible; the newer version adds dispatch diagnostics.
 
 In **Data**, create a source and copy its source URL and server key. Keep your
 existing provider API key. Send the ReasonBlocks key in `x-reasonblocks-key`, alongside
@@ -49,8 +50,10 @@ With the generated helper, `x-reasonblocks-key` comes from `client_kwargs()`,
 `x-rb-seq` is sent automatically (1, 2, 3 … within the task) by the labelling the
 helper installs on import. The dashboard groups a task's calls by `x-rb-run`.
 
-Generate a new `x-rb-run` for each task and reuse it on every model call in that
-task. Use 1–128 letters, numbers, underscores, periods, colons or hyphens. Keep
+Generate a new `x-rb-run` for each top-level user turn and reuse it through all
+model calls, tool execution and the final answer. The next user turn gets a new
+ID, even in the same conversation. Use 1–128 letters, numbers, underscores,
+periods, colons or hyphens. Keep
 the full conversation, policy, tool definitions, and actual tool results in each
 request. Append the returned assistant message and its tool result before the
 next call; your application continues executing its tools.

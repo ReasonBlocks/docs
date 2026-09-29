@@ -48,6 +48,17 @@ can still reach its original provider and be recorded. An interrupted response,
 provider error or delivery failure appears separately; a training exclusion is
 not proof that the original provider call failed.
 
+An ordinary email address, including one in login tool arguments or results, is
+personal data rather than a credential. It follows the source's privacy setting
+(`off`, `redact` or `pseudonymize`). Passwords, access tokens and other actual
+secrets still block storage or training admission. An email supplied as a password
+is still a secret. A historical exclusion reason alone does not establish whether
+an exchange was recorded; check its recording status.
+
+**Connected** confirms capture activity. It does not mean a model has been trained
+or is awaiting approval. Training is a separate workflow; see
+[Train your complete agent](/full-agent-training) when you are ready.
+
 ## Anthropic request options
 
 | Option | Original provider call | Optimized serving |
@@ -72,6 +83,10 @@ Only an explicit upstream decision invokes the original Bedrock operation.
 An uncertain or failed candidate dispatch is not silently replayed as a second
 paid provider call.
 
+`rbtrace==1.3.1` adds safe dispatch diagnostics; `1.3.0` remains compatible.
+The upgrade does not require changing the source URL, key or Bedrock client.
+See [Dispatch diagnostics](/api-reference/reasonblocks#dispatch-diagnostics-131).
+
 `InvokeModelWithResponseStream` and `ConverseStream` remain native upstream
 streams. Recording observes their consumption; it does not turn them into
 candidate token streams. Incomplete consumption prevents a complete capture event;
@@ -93,8 +108,9 @@ unsupported requests stay upstream before a candidate execution begins. Read the
 [full-agent serving contract](/full-agent-training#5-enable-the-reviewed-release)
 before enabling a release.
 
-Create one run per complete task with `rb.run(task_id)`. Keep tool calls inside
-that scope. Snapshots are optional for ordinary recording; full-agent training
+Create one run per top-level user turn with `rb.run(task_id)`, covering all model
+calls, tool execution and the final answer. Use a new ID for the next turn in the
+same conversation. Snapshots are optional for ordinary recording; full-agent training
 requires a real repeatable starting state. Existing generated helpers and their
 `run_headers()` interface remain supported; see the
 [migration guide](/agent-setup#migrate-an-older-generated-connection).

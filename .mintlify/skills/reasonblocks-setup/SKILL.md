@@ -2,7 +2,7 @@
 name: reasonblocks-setup
 description: "Connect or migrate a Python agent to ReasonBlocks dashboard capture, preserve task boundaries, verify the local setup, and guide the improvement cycle: assess data, recommend training, review training progress, test candidate models and recommend adoption or further collection. Use when integrating ReasonBlocks or working on a ReasonBlocks model's lifecycle."
 metadata:
-  compatibility: Client setup requires Python 3.10 or newer, the published rbtrace 1.2.1 and an existing OpenAI or Anthropic Python SDK. Lifecycle reviews can use existing dashboard reports without the setup CLI.
+  compatibility: Native Bedrock and optional helper setup require Python 3.10 or newer and rbtrace 1.3.1; 1.3.0 remains compatible. Direct Anthropic and OpenAI integrations need no ReasonBlocks package. Lifecycle reviews can use existing dashboard reports without the setup CLI.
 ---
 
 # ReasonBlocks setup
@@ -16,12 +16,14 @@ in the dashboard. This skill covers an active working session. It does not sched
 background checks or imply that the agent continues monitoring after the session ends.
 
 Read the [setup guide](https://docs.reasonblocks.com/agent-setup.md) when installing
-or migrating the client. Install the published `rbtrace==1.2.1` in the application's
-environment and verify its commands there. Do not claim a command is available
-until it runs in that environment.
+or migrating the client. For native Bedrock or the optional helper, install
+`rbtrace==1.3.1` in the application's environment and verify its commands there.
+Existing `1.3.0` integrations remain compatible; the optional upgrade adds safe
+Bedrock dispatch diagnostics. Keep the existing source, key and instrumentation.
+Do not claim a command is available until it runs in that environment.
 
 ReasonBlocks provides a CLI, a small Python integration helper and this skill.
-The existing OpenAI or Anthropic Python client library—the provider SDK—continues
+The existing OpenAI, Anthropic, Gemini or Bedrock Python client library continues
 making model calls. Preserve the application's framework and client settings.
 
 ## Inspect and obtain the connection
@@ -36,21 +38,36 @@ Use the exact HTTPS source URL and key issued in **Data**. Current support is:
 
 - OpenAI Chat Completions: `/capture/SOURCE_ID/openai/v1`, provider `openai`.
 - Anthropic Messages: `/capture/SOURCE_ID/anthropic`, provider `anthropic`.
+- Native Bedrock: `Connection(source_id=...)` and
+  `rb.instrument_bedrock(existing_boto3_client, serving=True)` preserve AWS IAM and the endpoint.
+- Gemini: `genai.Client(**rb.client_kwargs("gemini"))` uses the source's hosted URL.
 
-Do not invent a source URL, treat `rb_live_` organization/API keys as capture keys or
-silently switch provider/API to fit this list. Responses, Fireworks and arbitrary
-upstreams are outside this dashboard setup. Gemini and Bedrock are captured through the
-dashboard with client-side setup: https://docs.reasonblocks.com/client-integration.md#gemini-and-bedrock
+An `rb_live_` key needs Capture permission and access to the source; Inference
+permission is also needed for trained-model serving. The prefix alone does not
+establish permissions. Direct Anthropic and OpenAI clients can keep their source
+base URL and `x-reasonblocks-key` header without installing a helper. Do not invent
+a URL or silently switch provider/API. Responses, Fireworks and arbitrary upstreams
+are outside this dashboard setup. See
+[Gemini and Bedrock](https://docs.reasonblocks.com/client-integration.md#gemini-and-bedrock).
 
 Account sign-in and source/key creation currently happen in the dashboard.
-Capture keys expire after seven days; rotation invalidates the previous key.
+New server and source keys have no scheduled expiration by default. Existing
+expiration dates still apply. Source-key rotation permits a 24-hour overlap,
+bounded by the old key's expiry; revocation takes effect without that overlap.
 Connecting and ordinary capture require no sandbox or environment snapshot.
 
 ## Install and initialize
 
-Use the project's package manager and record `rbtrace==1.2.1` in its dependency
+For an optional helper or native Bedrock integration, use the project's package
+manager and record `rbtrace==1.3.1` in its dependency
 manifest. Install it into the application environment; a global
 or `uvx` tool environment alone is insufficient.
+
+Prefer `Connection(source_id="SOURCE_ID")` for new helper integrations; it reads
+`REASONBLOCKS_API_KEY` and discovers the source URLs. For native Bedrock, instrument
+the existing boto3 client and keep AWS credentials local. Keep existing direct
+clients and generated helpers when they already work. The following CLI workflow
+remains available for generated helpers.
 
 ```bash
 python -m rbtrace init --capture-url "$REASONBLOCKS_CAPTURE_URL" --provider anthropic --path . --json
@@ -88,8 +105,8 @@ and adds the configured capture host to the allowlist. `RBTRACE_HOSTS` entries
 without a leading dot match exact hosts; `.example.com` matches subdomains.
 Every model call the provider SDK makes then carries `x-rb-run` and `x-rb-seq`.
 Do not add a manual `rbtrace.client.install()` call; the generated helper does it on
-import. (Gemini and Bedrock do not use the helper at all -- their client is configured
-directly, as the Data page shows.) The dashboard groups a task's
+import. New Gemini and native Bedrock integrations can use `Connection`, as shown
+in the client integration guide. The dashboard groups a task's
 calls by `x-rb-run`, and one `x-rb-run` is one training task; it does not
 currently read `x-rb-seq`, which orders a task's calls. The labels help group
 and order requests. They do not establish complete capture or a replayable
@@ -106,6 +123,11 @@ Decide the task boundary by process shape, as described in
   boundary and pass the result as `extra_headers=headers` on every model call in
   that task. This is required; without it every task collapses into one
   process-wide `x-rb-run`.
+
+Use one run per top-level user turn: its first model call, tool loop and final
+answer. The next user turn gets a new ID even in the same conversation. Do not
+use a conversation ID for every turn or generate a new run for each model call.
+With `Connection`, wrap that boundary in `with rb.run(unique_turn_id):`.
 
 Keep headers in each concurrent job's own state. Use `run_id=existing_task_id`
 when a suitable task ID already exists. Never create a new ID per model step or
@@ -168,6 +190,22 @@ Report changed files, selected source/provider, task-boundary placement, local
 checks and any missing inputs. After setup, recommend the next step from the
 workflow below. A request to install is not itself authorization to spend on
 training or change production traffic.
+
+For `Connection`, `rb.status()` reads authenticated recording status.
+`rb.diagnostics()` reports local delivery counters; in `1.3.1`, `last_dispatch`
+also reports the latest completed dispatch's elapsed time, route or failure
+category, HTTP status and dispatch ID. A caught `DispatchError` exposes
+`category`, `status_code`, `dispatch_id`, `outcome_unknown=True` and `retry_safe=False`.
+These fields omit credentials and request/response bodies. Reconcile unknown
+outcomes before retrying: never automatically replay through AWS or create a new
+dispatch ID after an error. See
+[Dispatch diagnostics](https://docs.reasonblocks.com/api-reference/reasonblocks.md#dispatch-diagnostics-131).
+
+Ordinary email addresses, including login tool arguments and results, follow the
+source privacy policy rather than being classified as credentials. Passwords,
+tokens and other actual secrets remain blocked; an email used as a password is
+still a secret. Check recording availability separately from training eligibility.
+Connected capture does not mean a model is trained or awaiting approval.
 
 ## Guide the improvement cycle
 
