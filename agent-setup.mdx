@@ -16,10 +16,12 @@ dashboard; preserve the existing provider credential, model and task loop.
 
 ## Optional Connection helper
 
-For automatic run labels or native Bedrock, install `rbtrace==1.3.0` in the application's Python
+For automatic run labels or native Bedrock, install `rbtrace==1.3.1` in the application's Python
 environment. Create a source and a persistent server key in **Data**. Store it as
 `REASONBLOCKS_API_KEY`; leave the provider key in its existing secret environment.
 The server key must allow Capture and, for optimized serving, Inference.
+Existing `1.3.0` integrations remain compatible. Version `1.3.1` is an optional
+Bedrock diagnostics upgrade; keep your existing source URL, key and client setup.
 
 ```python
 from rbtrace import Connection
@@ -45,6 +47,10 @@ eligibility and failures automatically. No header inspection is required. The
 sections below cover the existing generated-helper CLI workflow and migration.
 Existing helpers remain supported.
 
+Use one run per top-level user turn, covering its model calls, tool loop and
+final answer. Start a new run for the next user turn, even in the same conversation.
+Do not create a run per model step or keep one for an entire multi-turn conversation.
+
 ## What you need
 
 - A Python 3.10 or newer application using OpenAI Chat Completions or Anthropic Messages.
@@ -66,13 +72,13 @@ bounded by the old key's expiry.
 Use your project's package manager. For uv:
 
 ```bash
-uv add rbtrace==1.3.0
+uv add rbtrace==1.3.1
 ```
 
 For a pip-managed environment:
 
 ```bash
-python -m pip install rbtrace==1.3.0
+python -m pip install rbtrace==1.3.1
 ```
 
 Record the dependency in the existing manifest or requirements file. Use the

@@ -24,9 +24,11 @@ Keep the source URL and authentication headers unchanged when enabling a release
 
 ## Optional source-based helper
 
-Install `rbtrace==1.3.0` if you prefer automatic run labeling and source discovery.
+Install `rbtrace==1.3.1` if you prefer automatic run labeling and source discovery.
 This helper is optional for a directly configured Anthropic or OpenAI client.
 Native Bedrock uses it to retain the existing IAM-signed AWS transport.
+Existing `1.3.0` integrations remain compatible. Upgrading to `1.3.1` adds Bedrock
+dispatch diagnostics and needs no new source URL, key or instrumentation code.
 
 ```python
 from rbtrace import Connection
@@ -133,6 +135,14 @@ requests. An explicit upstream decision uses your original Bedrock operation.
 A candidate error or uncertain dispatch is not automatically retried against
 Bedrock. Set `serving=False` for capture only.
 
+In `1.3.1`, `DispatchError` exposes a safe error category, HTTP status when available
+and dispatch ID. `rb.diagnostics()["last_dispatch"]` adds the latest dispatch's
+timing and outcome. These help distinguish authentication, timeout and other
+failures without exposing request or response content. See
+[Dispatch diagnostics](/api-reference/reasonblocks#dispatch-diagnostics-131).
+An unknown outcome requires reconciliation; do not catch the error and replay
+the call through AWS or generate a new dispatch ID automatically.
+
 Streaming calls stay upstream and are observed while your application consumes
 them. They do not become optimized-model streams. Incomplete consumption prevents
 a complete capture event; check `rb.diagnostics()` for local delivery failures.
@@ -142,6 +152,12 @@ Legacy applications can still use the hosted
 That relay does not support SigV4; the native SDK integration above does.
 
 ## Run identity and sequence numbers
+
+Use one run for each top-level user turn: the first model call, its tool loop and
+the final answer. Keep the same run ID throughout that turn, then create a new
+ID for the next user turn, even within the same conversation. Creating a run for
+each model call breaks the tool loop; using one for the entire conversation merges
+separate tasks. For a background job, use the equivalent complete job boundary.
 
 Importing the generated helper installs run labelling for the process: every model
 call your provider client makes carries an `x-rb-run` header (which task the call

@@ -20,7 +20,9 @@ source-preselected setup snippet. Store the key as `REASONBLOCKS_API_KEY` in you
 server's secret environment. Keep the same URL and ReasonBlocks key when moving
 from recording to an approved, supported release. Your provider credential stays
 in place. The optional Connection helper and native Bedrock integration use
-`rbtrace==1.3.0`; a directly configured Anthropic client needs no helper upgrade.
+`rbtrace==1.3.1`; a directly configured Anthropic client needs no helper upgrade.
+Existing `1.3.0` integrations remain compatible. Version `1.3.1` adds optional
+Bedrock dispatch diagnostics without changing the connection.
 
 Your coding agent can follow the [setup guide](/agent-setup), also available as
 [/agent-setup.md](/agent-setup.md). Existing generated helpers and their migration

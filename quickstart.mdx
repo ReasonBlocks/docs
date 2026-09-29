@@ -48,11 +48,12 @@ client = client_for_task("your-unique-task-id")
 
 Keep `ANTHROPIC_API_KEY` in its usual environment variable. For OpenAI, use
 `OpenAI` and the source URL ending in `/openai/v1`. Use a unique `x-rb-run` for
-each complete task, including all model calls and tool execution. If you reuse a
+each top-level user turn, including all model calls, tool execution and its final
+answer. Start a new ID for the next user turn in the same conversation. If you reuse a
 long-lived SDK client, pass the task's `x-rb-run` through `extra_headers` on each
 call instead of setting it as a client default.
 
-For native Bedrock, install `rbtrace==1.3.0` once and instrument your existing
+For native Bedrock, install `rbtrace==1.3.1` once and instrument your existing
 boto3 client. Keep its IAM credential chain:
 
 ```python
@@ -60,12 +61,14 @@ from rbtrace import Connection
 
 rb = Connection(source_id="SOURCE_ID")
 rb.instrument_bedrock(existing_boto3_client, serving=True)
-# Run each complete task inside with rb.run("your-unique-task-id").
+# Keep one user turn's tool loop and final answer inside rb.run("unique-turn-id").
 ```
 
 No Anthropic API key is required for native Bedrock calls. See
 [Integrating your agent](/client-integration) for native Bedrock behavior and
 [Set up with your coding agent](/agent-setup) for existing CLI integrations.
+Existing `1.3.0` installations remain compatible. The optional `1.3.1` upgrade
+adds dispatch diagnostics; keep the same source, key and client code.
 
 ## 3. Verify the connection automatically
 
@@ -77,6 +80,11 @@ A request can be recorded while excluded from training. Open the reason in the
 connection status before changing your application. If you use the optional
 Connection helper, `rb.status()` reads server status and `rb.diagnostics()` reports
 local SDK delivery information.
+
+**Connected** means capture is working. It does not mean a model is trained or
+waiting for approval. Ordinary email addresses follow your source's privacy
+policy; actual passwords and tokens remain blocked. See
+[Recording and training eligibility](/endpoint-compatibility#recording-and-training-eligibility).
 
 Normal provider fees apply to model calls. Status checks do not generate a model response.
 
